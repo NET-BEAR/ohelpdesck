@@ -1,6 +1,6 @@
 # QA/ПСИ: SPEC-010 local_password
 
-Статус: `needs_rework`. Дата: 2026-09-10. Проверенный commit: `8c6f706`.
+Статус: `approved`. Дата: 2026-09-10. Первичная проверка: `8c6f706`; QA retest: `bba5ba5`.
 
 ## Граница и окружение
 
@@ -38,15 +38,15 @@ S3. Фактический integration evidence ниже отделён от н�
 | 4. Agent cannot mutate users/bundles | PASS | Integration test receives 403 before user mutation; authorization uses server effective permissions. |
 | 5. Admin creates protected password user | PASS | `Repository.Create` uses Argon2id; safe responses omit hash; integration checks profile has no `password_hash`. |
 | 6. CSRF before mutation, logout revokes session | PASS | Missing CSRF returns 403; logout is 204 and subsequent `/me` returns 401. |
-| 7. Concurrent duplicate login/email creation | **FAIL — QA-010-01** | Case-insensitive DB uniqueness and sequential duplicate conflict are tested, но нет concurrent HTTP/repository test с одинаковыми login/email, который требует AC. Runtime race therefore is not acceptance-confirmed. |
+| 7. Concurrent duplicate login/email creation | PASS после retest | Barrier запускает две одновременные authenticated HTTP requests; отдельно подтверждены case-insensitive collision по login и email, а PostgreSQL assertion проверяет ровно одну persisted запись. |
 | 8. Last active administrator, including concurrency | PASS | Advisory transaction lock plus integration concurrency test; Reviewer repeated it three times against persistent DB and verified invariant `active administrators >= 1`. |
 | 9. Unsupported provider/dev bypass fail closed | PASS | Config tests cover unsupported provider and production policy; startup tests ensure errors do not disclose config input. |
-| 10. Repeated invalid login is rate-limited | **PARTIAL — QA-010-02** | Unit test proves isolated limiter count/reset by normalized login, but no handler/integration test performs six wrong-password POSTs and asserts 429/no further verification. The end-to-end AC is unproven. |
+| 10. Repeated invalid login is rate-limited | PASS после retest | Сквозной integration scenario подтверждает пять neutral `401`, затем `429`, counter `auth_failures_total{reason="rate_limited"}` и успешный вход для другого login. |
 | 11. Repeated ordered migration/status | PASS | Checksummed runner and migration tests are present; independent Reviewer recorded successful full verification and integration migrations. |
 
 ## Bug reports
 
-### QA-010-01 — отсутствует acceptance test конкурентного создания одинаковых users
+### QA-010-01 — отсутствовал acceptance test конкурентного создания одинаковых users
 
 Severity: P2. Reproduction: start two concurrent authenticated create requests
 with login or email differing only by case; AC expects exactly one `201` and one
@@ -59,7 +59,7 @@ Required fix: add deterministic integration test with barriers/two concurrent
 requests and assert outcome plus persisted cardinality for both login and email
 case-insensitive collisions.
 
-### QA-010-02 — отсутствует сквозной test login rate-limit policy
+### QA-010-02 — отсутствовал сквозной test login rate-limit policy
 
 Severity: P2. Reproduction: issue more than five invalid password POSTs for
 one normalized login in the configured 15-minute window; sixth request must be
@@ -90,8 +90,33 @@ administrator create/update/bundle assignment.
 
 ## Verdict
 
-`needs_rework`: два P2 не являются подтверждёнными acceptance scenarios.
-Production security findings из `REVIEW.md` закрыты, однако до ПСИ и deploy
-нужно добавить QA-010-01 и QA-010-02, выполнить их на isolated integration
-environment, затем повторить independent review (затронуты tests/observability)
-и QA retest.
+Первичный verdict был `needs_rework`: QA-010-01 и QA-010-02 не имели
+подтверждённых acceptance scenarios. Они закрыты последующим test-only rework;
+итоговая оценка приведена ниже.
+
+## QA retest: QA-010-01 и QA-010-02
+
+Проверены commits `aa21e25`, `9d8b627` и финальный review commit `bba5ba5`.
+Production code, configuration и API contract не менялись; исправлен только
+acceptance-test coverage.
+
+- **QA-010-01 — закрыт.** В `concurrentCollision` обе goroutine сообщают
+  readiness и ожидают общий start barrier. Проверяются отдельные case-insensitive
+  collision по login при разных email и по email при разных login. Каждый case
+  требует ровно `201` + `409` и PostgreSQL cardinality `1`.
+- **QA-010-02 — закрыт.** Сквозной scenario проводит пять wrong-password POST
+  с neutral `401`, проверяет `429` на шестом, counter
+  `auth_failures_total{reason="rate_limited"}` и успешный correct login другого
+  пользователя.
+
+Я independently inspected новые сценарии и повторно запустил доступный
+clean-container race suite без `.env`; он завершился exit 0, но integration
+tests были skipped без runtime variables. Для runtime части использовано
+отдельно указанное evidence независимого Reviewer: strict concurrent suite
+`go test -race -count=3 ./tests/integration` завершилась exit 0 за 131.559s.
+
+**Итоговый verdict: `approved`.** Все 11 acceptance criteria имеют результат.
+Материалы ПСИ выше остаются применимы для dev deploy. Сохраняется известное
+архитектурное ограничение: rate limiter in-memory рассчитан на один API process;
+при горизонтальном масштабировании необходим отдельный distributed rate-limit
+этап.

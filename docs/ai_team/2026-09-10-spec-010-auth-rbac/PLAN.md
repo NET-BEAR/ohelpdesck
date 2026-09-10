@@ -1,6 +1,6 @@
 # Реализация SPEC-010: Authentication, Users, RBAC
 
-Статус задачи: `in_qa`. Дата: 2026-09-10. Владелец: оркестратор.
+Статус задачи: `completed`. Дата: 2026-09-10. Владелец: оркестратор.
 
 ## Цель и границы
 
@@ -63,6 +63,10 @@
 ### QA rework: закрытие coverage P2
 
 QA обнаружил отсутствующие acceptance-сценарии. Добавлены два deterministic HTTP integration tests: параллельный `POST /api/v1/users` с отдельной case-insensitive collision login и collision email (у каждого pair ровно один `201`, один `409`, persisted cardinality=1), а также пять `401` и шестой `429` для одного login с успешным входом другого login и проверкой `auth_failures_total{reason="rate_limited"}`. Barrier синхронизирует оба create request до старта. `go test -race -count=3 ./tests/integration` прошёл. Изменение возвращается на narrow review и QA retest.
+
+## Завершение
+
+Независимый reviewer одобрил final acceptance-test scope, а QA retest закрыл QA-010-01 и QA-010-02. Реализованный срез готов к следующей функции helpdesk: внутренний `local_password` provider, bootstrap admin через runtime-only secret, users/RBAC/permission bundles, server sessions/CSRF, OpenAPI и UI login/profile. Remote dev deploy с созданием `sysadmin` остаётся отдельной операцией, поскольку секрет не передаётся через git, CI или документы.
 
 ## Артефакты
 
