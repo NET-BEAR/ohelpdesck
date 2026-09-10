@@ -182,7 +182,56 @@ paths:
         '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '403': {description: Missing role.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '409': {description: Bundle name already exists, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/conversations/{id}/status:
+    patch:
+      operationId: changeConversationStatus
+      security: [{SessionCookie: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ChangeConversationStatusRequest'}
+      responses:
+        '200': {description: Conversation status updated, content: {application/json: {schema: {$ref: '#/components/schemas/Conversation'}}}}
+        '400': {description: Invalid JSON, enum, expected_version or snooze deadline, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Invalid CSRF, missing conversation.reply or Channel can_reply membership, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '409': {description: Stale expected_version or invalid state transition, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/conversations/{id}/priority:
+    patch:
+      operationId: setConversationPriority
+      security: [{SessionCookie: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetConversationPriorityRequest'}
+      responses:
+        '200': {description: Conversation priority updated, content: {application/json: {schema: {$ref: '#/components/schemas/Conversation'}}}}
+        '400': {description: Invalid JSON, enum or expected_version, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Invalid CSRF, missing conversation.reply or Channel can_reply membership, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '409': {description: Stale expected_version, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
 components:
+  securitySchemes:
+    SessionCookie:
+      type: apiKey
+      in: cookie
+      name: ohelpdesck_session
   parameters:
     CSRFToken:
       name: X-CSRF-Token
@@ -284,3 +333,37 @@ components:
       properties:
         name: {type: string, minLength: 1, maxLength: 255}
         permissions: {type: array, items: {type: string}, uniqueItems: true}
+
+    ConversationStatus:
+      type: string
+      enum: [open, pending, resolved, snoozed]
+    ConversationPriority:
+      type: string
+      enum: [low, normal, high, urgent]
+    Conversation:
+      type: object
+      additionalProperties: false
+      required: [id, channel_id, status, priority, version]
+      properties:
+        id: {type: string, format: uuid}
+        channel_id: {type: string, format: uuid}
+        status: {$ref: '#/components/schemas/ConversationStatus'}
+        priority: {$ref: '#/components/schemas/ConversationPriority'}
+        resolved_at: {type: [string, 'null'], format: date-time}
+        snoozed_until: {type: [string, 'null'], format: date-time}
+        version: {type: integer, format: int64, minimum: 1}
+    ChangeConversationStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, status]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+        status: {$ref: '#/components/schemas/ConversationStatus'}
+        snoozed_until: {type: string, format: date-time}
+    SetConversationPriorityRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, priority]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+        priority: {$ref: '#/components/schemas/ConversationPriority'}

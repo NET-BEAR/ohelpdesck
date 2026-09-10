@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/NET-BEAR/ohelpdesck/internal/auth"
+	"github.com/NET-BEAR/ohelpdesck/internal/core"
 	"github.com/NET-BEAR/ohelpdesck/internal/platform/config"
 	"github.com/NET-BEAR/ohelpdesck/internal/platform/database"
 	"github.com/NET-BEAR/ohelpdesck/internal/platform/httpserver"
@@ -59,7 +60,7 @@ func Run(ctx context.Context, worker bool) error {
 	servers := []*http.Server{{Addr: c.MetricsAddress, Handler: metrics.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: c.ReadTimeout, WriteTimeout: c.WriteTimeout, IdleTimeout: c.IdleTimeout}}
 	if !worker {
 		repository := auth.NewRepository(db)
-		servers = append(servers, &http.Server{Addr: c.HTTPAddress, Handler: httpserver.NewApplication(map[string]httpserver.Check{"postgres": db.Ping, "redis": cache.Health, "object_storage": store.Health}, c.CORSOrigins, metrics, auth.NewHTTPHandler(repository, c.Environment == "production", auth.Observability{Metrics: metrics, Log: log}), log), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: c.ReadTimeout, WriteTimeout: c.WriteTimeout, IdleTimeout: c.IdleTimeout})
+		servers = append(servers, &http.Server{Addr: c.HTTPAddress, Handler: httpserver.NewApplication(map[string]httpserver.Check{"postgres": db.Ping, "redis": cache.Health, "object_storage": store.Health}, c.CORSOrigins, metrics, auth.NewOperatorHTTPHandler(repository, c.Environment == "production", core.NewConversationService(db), auth.Observability{Metrics: metrics, Log: log}), log), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: c.ReadTimeout, WriteTimeout: c.WriteTimeout, IdleTimeout: c.IdleTimeout})
 	}
 	log.Info("starting")
 	errs := make(chan error, len(servers))

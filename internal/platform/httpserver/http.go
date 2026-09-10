@@ -82,8 +82,8 @@ func NewApplication(checks map[string]Check, origins string, metrics *telemetry.
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Add("Vary", "Origin")
 			if r.Method == "OPTIONS" {
-				w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Request-ID")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Request-ID, X-CSRF-Token")
 				w.WriteHeader(204)
 				status = 204
 				return

@@ -18,6 +18,7 @@ var (
 	ErrVersionConflict               = errors.New("version_conflict")
 	ErrInvalidSnoozeDeadline         = errors.New("invalid_snooze_deadline")
 	ErrInvalidConversationPriority   = errors.New("invalid_conversation_priority")
+	ErrConversationForbidden         = errors.New("conversation_forbidden")
 )
 
 type ConversationStatus string
@@ -52,6 +53,9 @@ type ChangeConversationStatus struct {
 	Status          ConversationStatus
 	SnoozedUntil    *time.Time
 	CorrelationID   uuid.UUID
+	// ActorID is set only by authenticated operator boundaries. It activates
+	// the locked Channel membership capability check inside this transaction.
+	ActorID uuid.UUID
 }
 
 type SetConversationPriority struct {
@@ -59,6 +63,9 @@ type SetConversationPriority struct {
 	ExpectedVersion int64
 	Priority        ConversationPriority
 	CorrelationID   uuid.UUID
+	// ActorID is set only by authenticated operator boundaries. It activates
+	// the locked Channel membership capability check inside this transaction.
+	ActorID uuid.UUID
 }
 
 // ConversationService owns explicit operator mutations. Authorization and HTTP
@@ -82,7 +89,7 @@ func (s *ConversationService) ChangeStatus(ctx context.Context, command ChangeCo
 	}
 	var result Conversation
 	err := s.db.WithinTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		current, err := loadConversationForUpdate(ctx, tx, command.ConversationID)
+		current, err := loadConversationForUpdate(ctx, tx, command.ConversationID, command.ActorID)
 		if err != nil {
 			return err
 		}
@@ -125,7 +132,7 @@ func (s *ConversationService) SetPriority(ctx context.Context, command SetConver
 	}
 	var result Conversation
 	err := s.db.WithinTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		current, err := loadConversationForUpdate(ctx, tx, command.ConversationID)
+		current, err := loadConversationForUpdate(ctx, tx, command.ConversationID, command.ActorID)
 		if err != nil {
 			return err
 		}
@@ -147,7 +154,26 @@ func (s *ConversationService) SetPriority(ctx context.Context, command SetConver
 	return result, err
 }
 
-func loadConversationForUpdate(ctx context.Context, tx pgx.Tx, id uuid.UUID) (Conversation, error) {
+func loadConversationForUpdate(ctx context.Context, tx pgx.Tx, id, actorID uuid.UUID) (Conversation, error) {
+	if actorID != uuid.Nil {
+		var channelID uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT channel_id FROM conversations WHERE id=$1`, id).Scan(&channelID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return Conversation{}, ErrConversationNotFound
+			}
+			return Conversation{}, fmt.Errorf("conversation lookup: %w", err)
+		}
+		var canReply bool
+		if err := tx.QueryRow(ctx, `SELECT can_reply FROM channel_memberships WHERE channel_id=$1 AND user_id=$2 FOR UPDATE`, channelID, actorID).Scan(&canReply); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return Conversation{}, ErrConversationForbidden
+			}
+			return Conversation{}, fmt.Errorf("channel membership lookup: %w", err)
+		}
+		if !canReply {
+			return Conversation{}, ErrConversationForbidden
+		}
+	}
 	var conversation Conversation
 	if err := tx.QueryRow(ctx, `SELECT id,channel_id,status,priority,resolved_at,snoozed_until,version FROM conversations WHERE id=$1 FOR UPDATE`, id).Scan(&conversation.ID, &conversation.ChannelID, &conversation.Status, &conversation.Priority, &conversation.ResolvedAt, &conversation.SnoozedUntil, &conversation.Version); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

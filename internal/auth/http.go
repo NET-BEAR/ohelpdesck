@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/NET-BEAR/ohelpdesck/internal/core"
 	"time"
 
 	"github.com/NET-BEAR/ohelpdesck/internal/platform/telemetry"
@@ -18,11 +20,12 @@ import (
 const sessionCookie = "ohelpdesck_session"
 
 type HTTPHandler struct {
-	repository   *Repository
-	secureCookie bool
-	limiter      *loginLimiter
-	metrics      *telemetry.Metrics
-	log          *slog.Logger
+	repository    *Repository
+	secureCookie  bool
+	limiter       *loginLimiter
+	metrics       *telemetry.Metrics
+	log           *slog.Logger
+	conversations *core.ConversationService
 }
 
 type Observability struct {
@@ -31,7 +34,18 @@ type Observability struct {
 }
 
 func NewHTTPHandler(repository *Repository, secureCookie bool, observability ...Observability) http.Handler {
-	h := &HTTPHandler{repository: repository, secureCookie: secureCookie, limiter: newLoginLimiter(5, 15*time.Minute)}
+	return newHTTPHandler(repository, secureCookie, nil, observability...)
+}
+
+// NewOperatorHTTPHandler adds the provider-neutral Conversation command boundary
+// to the existing authenticated API. The core service locks Channel membership
+// inside the same transaction as the mutation.
+func NewOperatorHTTPHandler(repository *Repository, secureCookie bool, conversations *core.ConversationService, observability ...Observability) http.Handler {
+	return newHTTPHandler(repository, secureCookie, conversations, observability...)
+}
+
+func newHTTPHandler(repository *Repository, secureCookie bool, conversations *core.ConversationService, observability ...Observability) http.Handler {
+	h := &HTTPHandler{repository: repository, secureCookie: secureCookie, limiter: newLoginLimiter(5, 15*time.Minute), conversations: conversations}
 	if len(observability) > 0 {
 		h.metrics, h.log = observability[0].Metrics, observability[0].Log
 	}
@@ -55,6 +69,8 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		h.clearCookie(w)
 		w.WriteHeader(http.StatusNoContent)
+	case strings.HasPrefix(r.URL.Path, "/api/v1/conversations/") && r.Method == http.MethodPatch:
+		h.conversationCommand(w, r)
 	case r.URL.Path == "/api/v1/me" && r.Method == http.MethodGet:
 		principal, _, ok := h.authenticate(w, r, false)
 		if !ok {
