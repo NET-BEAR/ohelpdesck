@@ -35,3 +35,15 @@ Real integration запускается через `docker compose ... run --rm 
 ## Итоговая проверка разработчика
 
 2026-09-10: полный test/coverage/vet/race command завершился exit 0. Общее statement coverage **84.4%**, включая cmd. По объединению line ranges executable blocks coverprofile: **314/379 = 82.85%**. Это вычисление исполняемых block ranges Go, а не внешняя независимая diff-coverage система. Config/logging/Redis/storage/telemetry функции 100%, database Open 92.9%, migrations 84.6%, runtime 81.6%.
+
+## Security rework после независимого review
+
+Module/import paths исправлены на фактический remote `github.com/NET-BEAR/ohelpdesck`. Начальный `govulncheck@v1.1.4` завершился scanner status 3: 27 достижимых advisories в Go 1.25.7 и шести dependency modules. Достижимость символа не доказывает возможность эксплуатации текущими endpoint: например, pgx advisory требует особого simple-protocol SQL с пользовательским параметром внутри dollar-quoted литерала.
+
+Исправленные версии: Go **1.25.13** / `golang:1.25.13-bookworm`, digest `sha256:e401dae1bf814e29204a8cb7915682e1780951e609ca0dd8865ee1937f510c48`; pgx **5.9.2**; go-redis **9.7.3**; OTel/SDK/OTLP **1.43.0**; grpc **1.82.1**; x/net **0.55.0**; x/text **0.39.0**, совместимые транзитивные обновления зафиксированы go.sum. Official advisories: [OTLP response allocation](https://pkg.go.dev/vuln/GO-2026-4985), [pgx placeholder sanitization](https://pkg.go.dev/vuln/GO-2026-5004). После dependency updates `go test ./...`, `go vet ./...`, `govulncheck@v1.1.4 ./...` — exit 0, **0 достижимых уязвимостей**; scanner отдельно сообщает 2 advisories в imported packages и 18 в module dependencies без вызываемых уязвимых символов.
+
+Review regressions сначала подтвердили RED: секреты в `slog.Group("authorization",...)` и `WithGroup("password")`; readiness ожидал некорректный Check дольше 2200ms; Redis silent TCP peer игнорировал 50ms context примерно 3s; production API/worker stderr не называл отсутствующий `DATABASE_URL`.
+
+Исправления: redaction учитывает ancestry групп; OTel ErrorHandler пишет фиксированное сообщение без provider response/error; единая граница экспорта очищает URL query/userinfo, enduser.id и exception details/status. Tracing сохраняется; реальный HTTP запрос сохраняет query и Basic Auth, что проверяется inbound/outbound test с in-memory exporter. Redis использует `ContextTimeoutEnabled=true`, `MaxRetries=-1`; readiness выбирает между результатом Check и ctx.Done и по deadline оставляет PostgreSQL unavailable, optional зависимости degraded. API/worker выводят только типизированную безопасную config.Error с именем поля, остальные ошибки остаются обобщёнными. Production missing-config подтверждается subprocess tests.
+
+Итог security rework: test с real integrations, vet, race и govulncheck@v1.1.4 совместно завершились exit 0. Statements 301/340 = 88.5%; executable block line union 385/441 = 87.30%.

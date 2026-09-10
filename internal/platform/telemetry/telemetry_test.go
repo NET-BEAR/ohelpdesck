@@ -1,12 +1,22 @@
 package telemetry
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -58,4 +68,65 @@ func TestUnavailableExporter(t *testing.T) {
 	_, span := otel.Tracer("test").Start(ctx, "operation")
 	span.End()
 	_ = stop(ctx)
+}
+func TestSafeTelemetry(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+	stop := Init("test")
+	otel.Handle(errors.New("provider-secret"))
+	_ = stop(context.Background())
+	if strings.Contains(logs.String(), "provider-secret") {
+		t.Fatal("OTel error leaks")
+	}
+	exporter := tracetest.NewInMemoryExporter()
+	provider := trace.NewTracerProvider(trace.WithSyncer(safeExporter{exporter}))
+	defer provider.Shutdown(context.Background())
+	ctx, span := provider.Tracer("test").Start(context.Background(), "outbound")
+	_ = ctx
+	span.SetAttributes(attribute.String("url.full", "https://example.com/p?token=url-secret"), attribute.String("enduser.id", "identity-secret"))
+	span.RecordError(errors.New("event-secret"))
+	span.SetStatus(codes.Error, "status-secret")
+	span.End()
+	data, _ := json.Marshal(exporter.GetSpans())
+	for _, secret := range []string{"url-secret", "identity-secret", "event-secret", "status-secret"} {
+		if bytes.Contains(data, []byte(secret)) {
+			t.Fatal("span leaks " + secret)
+		}
+	}
+}
+func TestHTTPTracingPrivacyPreservesRequest(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := trace.NewTracerProvider(trace.WithSyncer(safeExporter{exporter}))
+	old := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	defer otel.SetTracerProvider(old)
+	defer provider.Shutdown(context.Background())
+	var received atomic.Bool
+	server := httptest.NewServer(otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, _, ok := r.BasicAuth()
+		received.Store(r.URL.Query().Get("token") == "query-sentinel" && ok && user == "identity-sentinel")
+		w.WriteHeader(204)
+	}), "inbound"))
+	defer server.Close()
+	target := strings.Replace(server.URL, "http://", "http://identity-sentinel:password-sentinel@", 1) + "/?token=query-sentinel"
+	resp, e := HTTPClient().Get(target)
+	if e != nil {
+		t.Fatal("network call failed")
+	}
+	_ = resp.Body.Close()
+	if !received.Load() {
+		t.Fatal("sanitizer changed actual request")
+	}
+	spans := exporter.GetSpans()
+	if len(spans) < 2 {
+		t.Fatal("tracing disabled")
+	}
+	data, _ := json.Marshal(spans)
+	for _, secret := range []string{"query-sentinel", "identity-sentinel", "password-sentinel"} {
+		if bytes.Contains(data, []byte(secret)) {
+			t.Fatal("HTTP span leaks " + secret)
+		}
+	}
 }

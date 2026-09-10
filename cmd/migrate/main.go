@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/krassus/ohelpdesck/internal/platform/database"
+	"github.com/NET-BEAR/ohelpdesck/internal/platform/database"
 	"os"
 	"time"
 )

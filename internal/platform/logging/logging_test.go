@@ -17,3 +17,12 @@ func TestSecrets(t *testing.T) {
 		}
 	}
 }
+func TestSecretGroupAncestors(t *testing.T) {
+	var b bytes.Buffer
+	l := New(&b, "api", "test")
+	l.Info("request", slog.Group("authorization", slog.String("value", "group-secret")))
+	l.WithGroup("password").Info("request", "value", "ancestor-secret")
+	if strings.Contains(b.String(), "group-secret") || strings.Contains(b.String(), "ancestor-secret") {
+		t.Fatal("secret group ancestry leaked")
+	}
+}

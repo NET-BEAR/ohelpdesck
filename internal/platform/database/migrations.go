@@ -3,8 +3,8 @@ package database
 import (
 	"context"
 	"fmt"
+	"github.com/NET-BEAR/ohelpdesck/db"
 	"github.com/jackc/pgx/v5"
-	"github.com/krassus/ohelpdesck/db"
 )
 
 // Migrate creates bookkeeping only; no business schema exists in SPEC-000.

@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"github.com/krassus/ohelpdesck/internal/platform/telemetry"
+	"github.com/NET-BEAR/ohelpdesck/internal/platform/telemetry"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/trace"
 	"io"
@@ -109,20 +109,26 @@ func New(checks map[string]Check, origins string, metrics *telemetry.Metrics, lo
 			}
 			completed := make(chan checked, len(checks))
 			for name, check := range checks {
+				result[name] = "degraded"
+				if name == "postgres" {
+					result[name] = "unavailable"
+				}
 				go func() { completed <- checked{name, check(ctx)} }()
 			}
+		collect:
 			for range checks {
-				c := <-completed
-				name := c.name
-				result[name] = "ok"
-				if c.err != nil {
-					result[name] = "degraded"
-					if name == "postgres" {
-						status = 503
-						state = "not_ready"
-						result[name] = "unavailable"
+				select {
+				case c := <-completed:
+					if c.err == nil {
+						result[c.name] = "ok"
 					}
+				case <-ctx.Done():
+					break collect
 				}
+			}
+			if result["postgres"] != "ok" {
+				status = 503
+				state = "not_ready"
 			}
 			w.WriteHeader(status)
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": state, "checks": result})

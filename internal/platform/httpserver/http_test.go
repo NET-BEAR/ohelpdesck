@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHealthAndSecurity(t *testing.T) {
@@ -49,5 +50,21 @@ func TestHealthAndSecurity(t *testing.T) {
 	New(nil, "", nil).ServeHTTP(w, r)
 	if w.Header().Get("X-Request-ID") != "request_123" {
 		t.Fatal("id changed")
+	}
+}
+func TestReadinessDeadline(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	h := New(map[string]Check{"postgres": func(context.Context) error { return nil }, "redis": func(context.Context) error { <-release; return nil }}, "", nil)
+	w := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { h.ServeHTTP(w, httptest.NewRequest("GET", "/health/ready", nil)); close(done) }()
+	select {
+	case <-done:
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"redis":"degraded"`) {
+			t.Fatalf("unexpected %d %s", w.Code, w.Body.String())
+		}
+	case <-time.After(2200 * time.Millisecond):
+		t.Fatal("readiness exceeded deadline")
 	}
 }

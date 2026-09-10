@@ -12,12 +12,14 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
+	"log/slog"
 	"net"
 	"net/http"
 	"time"
 )
 
 func Init(settings ...string) func(context.Context) error {
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(error) { slog.Warn("telemetry operation failed") }))
 	options := []trace.TracerProviderOption{}
 	if len(settings) > 0 {
 		options = append(options, trace.WithResource(resource.NewWithAttributes("", attribute.String("service.name", settings[0]))))
@@ -27,7 +29,7 @@ func Init(settings ...string) func(context.Context) error {
 		defer cancel()
 		exporter, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(settings[1]), otlptracehttp.WithTimeout(2*time.Second))
 		if err == nil {
-			options = append(options, trace.WithBatcher(exporter))
+			options = append(options, trace.WithBatcher(safeExporter{exporter}))
 		}
 	}
 	p := trace.NewTracerProvider(options...)
