@@ -1,6 +1,6 @@
 # SPEC-020: Core domain и transactional outbox
 
-Статус задачи: `in_implementation`. Дата: 2026-09-10. Владелец: оркестратор.
+Статус задачи: `completed` для первой core/outbox vertical. Дата: 2026-09-10. Владелец: оркестратор.
 
 ## Цель
 
@@ -19,12 +19,25 @@
 3. Authoritative clock waiting/first response: рекомендуется DB/server commit time; альтернативы — provider time или комбинированное правило.
 4. Поздняя provider correction `sent → failed`: рекомендуется восстанавливать waiting только если текущий episode всё ещё покрыт этим Message; альтернативы — никогда или всегда восстанавливать.
 
-## Следующие шаги
+## Завершение vertical slice
 
-1. Архитектор готовит `ARCHITECTURE.md`: lock order, transaction ownership, migration/constraint design и minimum PostgreSQL outbox.
-2. БА/QA формируют полный `ACCEPTANCE_TESTS.md` до кода.
-3. Разработчик создаёт RED tests, затем минимальную реализацию, проходит review и QA.
+Реализованы и прошли независимые review и QA:
 
-## Готовность к реализации
+1. Contact, ContactIdentity, Conversation и immutable inbound Message создаются
+   или находятся в одной PostgreSQL transaction; outbox events записываются в
+   той же transaction.
+2. Повтор external Message сериализуется по `(channel_id, external_message_id)`
+   до identity/conversation mutations и возвращает canonical IDs, включая retry
+   с изменёнными sender/thread и конкурентную доставку.
+3. Migration `000004` удаляет скрытые triggers из применённой migration 3,
+   сохраняя её checksum; service содержит явные checks channel/contact path.
+4. Remote QA на dev подтвердило migration version 4, targeted и полный
+   `-race` integration suite, общий coverage 83.6%, `go vet`, `gofmt` и API
+   readiness.
 
-`ARCHITECTURE.md` и `ACCEPTANCE_TESTS.md` готовы. Роль Разработчик начинает с RED integration tests с двумя PostgreSQL connections и failpoints; API/UI-сценарии, явно отложенные первым вертикальным срезом, не публикуются без отдельного contract task.
+## Следующий scope
+
+Не реализованные части полного SPEC-020 — ACL membership, operator
+transitions/resolve, outbound idempotency и dispatcher/jobs, SLA/metrics и
+privacy — требуют отдельных task artifacts, RED tests, review и QA. Они не
+считаются доставленными этим vertical slice.
