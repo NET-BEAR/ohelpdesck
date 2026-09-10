@@ -82,6 +82,22 @@ func TestOperatorConversationHTTPRequiresChannelMembership(t *testing.T) {
 	statusBody := `{"expected_version":1,"status":"pending"}`
 	priorityBody := `{"expected_version":1,"priority":"high"}`
 
+	if response := request(http.MethodPatch, "/api/v1/conversations/not-a-uuid/status", statusBody, true, true); response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid conversation id status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := request(http.MethodPatch, "/api/v1/conversations/"+fixture.ConversationID.String()+"/unknown", statusBody, true, true); response.Code != http.StatusNotFound {
+		t.Fatalf("unknown conversation command status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := request(http.MethodPatch, statusPath, `{"expected_version":0,"status":"pending"}`, true, true); response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid expected_version status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := request(http.MethodPatch, priorityPath, `{"expected_version":1,"priority":"invalid"}`, true, true); response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid priority status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := request(http.MethodPatch, statusPath, `{`, true, true); response.Code != http.StatusBadRequest {
+		t.Fatalf("malformed JSON status=%d body=%s", response.Code, response.Body.String())
+	}
+
 	if response := request(http.MethodPatch, statusPath, statusBody, false, false); response.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -103,6 +119,12 @@ func TestOperatorConversationHTTPRequiresChannelMembership(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO channel_memberships(channel_id,user_id,can_read,can_reply) VALUES($1,$2,true,true)`, channelID, operator.ID); err != nil {
 		t.Fatal(err)
 	}
+	if response := request(http.MethodPatch, "/api/v1/conversations/"+uuid.NewString()+"/status", statusBody, true, true); response.Code != http.StatusNotFound {
+		t.Fatalf("missing conversation status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := request(http.MethodPatch, statusPath, `{"expected_version":1,"status":"snoozed"}`, true, true); response.Code != http.StatusBadRequest {
+		t.Fatalf("missing snooze deadline status=%d body=%s", response.Code, response.Body.String())
+	}
 	response := request(http.MethodPatch, statusPath, statusBody, true, true)
 	if response.Code != http.StatusOK {
 		t.Fatalf("member status=%d body=%s", response.Code, response.Body.String())
@@ -113,6 +135,9 @@ func TestOperatorConversationHTTPRequiresChannelMembership(t *testing.T) {
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &changed); err != nil || changed.Version != 2 || changed.Status != "pending" {
 		t.Fatalf("status response=%s changed=%+v err=%v", response.Body.String(), changed, err)
+	}
+	if response := request(http.MethodPatch, statusPath, `{"expected_version":2,"status":"pending"}`, true, true); response.Code != http.StatusConflict {
+		t.Fatalf("invalid transition status=%d body=%s", response.Code, response.Body.String())
 	}
 	if response := request(http.MethodPatch, priorityPath, `{"expected_version":2,"priority":"high"}`, true, true); response.Code != http.StatusOK {
 		t.Fatalf("member priority=%d body=%s", response.Code, response.Body.String())
@@ -130,5 +155,22 @@ func TestOperatorConversationHTTPRequiresChannelMembership(t *testing.T) {
 	after, afterEvents = conversationSnapshot(t, ctx, pool, fixture.ConversationID)
 	if !sameConversation(after, before) || afterEvents != beforeEvents {
 		t.Fatalf("revoked membership mutated before=%+v/%d after=%+v/%d", before, beforeEvents, after, afterEvents)
+	}
+}
+
+func TestOperatorConversationHTTPRejectsUnconfiguredServiceAndSupportsCSRFPreflight(t *testing.T) {
+	plain := auth.NewHTTPHandler(nil, false)
+	missingService := httptest.NewRecorder()
+	plain.ServeHTTP(missingService, httptest.NewRequest(http.MethodPatch, "/api/v1/conversations/00000000-0000-0000-0000-000000000000/status", nil))
+	if missingService.Code != http.StatusNotFound {
+		t.Fatalf("unconfigured service status=%d", missingService.Code)
+	}
+	application := httpserver.NewApplication(nil, "https://operator.example.test", nil, plain)
+	preflight := httptest.NewRequest(http.MethodOptions, "/api/v1/conversations/00000000-0000-0000-0000-000000000000/status", nil)
+	preflight.Header.Set("Origin", "https://operator.example.test")
+	response := httptest.NewRecorder()
+	application.ServeHTTP(response, preflight)
+	if response.Code != http.StatusNoContent || response.Header().Get("Access-Control-Allow-Methods") != "GET, POST, PATCH, OPTIONS" || response.Header().Get("Access-Control-Allow-Headers") != "Content-Type, X-Request-ID, X-CSRF-Token" {
+		t.Fatalf("preflight status=%d methods=%q headers=%q", response.Code, response.Header().Get("Access-Control-Allow-Methods"), response.Header().Get("Access-Control-Allow-Headers"))
 	}
 }
