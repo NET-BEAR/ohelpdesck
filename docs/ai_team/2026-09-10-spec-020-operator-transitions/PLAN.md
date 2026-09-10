@@ -1,6 +1,6 @@
 # SPEC-020: operator transitions Conversation
 
-Статус задачи: `planned`. Дата: 2026-09-10. Владелец: оркестратор.
+Статус задачи: `completed`. Дата: 2026-09-10. Владелец: оркестратор.
 
 ## Цель
 
@@ -20,6 +20,10 @@
 2. Создать RED integration tests на удалённом dev-контуре.
 3. Реализовать минимальный application service и outbox events.
 4. Проверить CI и полный remote suite, затем независимые review и QA.
+
+## Результат
+
+Реализация, P1 rework, CI/deploy, remote verification, independent review и QA завершены. HTTP/ACL и WakeSnoozed остаются отдельными срезами.
 
 ## Открытые решения
 
