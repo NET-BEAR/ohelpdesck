@@ -151,30 +151,32 @@ after commit. Its fixed sequence is:
 1. Lock/read Channel and require `enabled=true`, `status=active`. Operator
    commands also check global permission and lock/read `channel_memberships`
    inside this transaction.
-2. Take an xact advisory lock for canonical `(channel_id, external_user_id)`;
+2. Take an xact advisory lock for canonical `(channel_id, external_message_id)`
+   and find the existing Message path before any identity or Conversation
+   mutation. A match returns the canonical Contact, Identity, Conversation and
+   Message IDs with no state or outbox write.
+3. Take an xact advisory lock for canonical `(channel_id, external_user_id)`;
    select ContactIdentity `FOR UPDATE`. If absent, create Contact and identity.
    The unique index is the final backstop. On `ON CONFLICT DO NOTHING`, re-read
    the winning identity and remove the newly-created unreferenced Contact, or
    roll that attempt back to a savepoint.
-3. Take an xact advisory lock for canonical `(channel_id, external_thread_id,
+4. Take an xact advisory lock for canonical `(channel_id, external_thread_id,
    contact_identity_id)`; select current Conversation `FOR UPDATE`. If absent,
    insert it. If the partial unique index detects legacy/external contention,
    re-read the winner `FOR UPDATE`.
-4. Find the channel-scoped external Message ID. A match returns the canonical
-   result with no new Message/state/event. Otherwise insert Message, apply the
-   Conversation transition, increment version, and append domain events through
-   the same `pgx.Tx`.
-5. Commit. Any repository, validation or outbox error rolls back every core and
+5. Insert Message, apply the Conversation transition, increment version, and
+   append domain events through the same `pgx.Tx`.
+6. Commit. Any repository, validation or outbox error rolls back every core and
    outbox write.
 
-The lock order for every core mutation is **Channel/membership → identity
-advisory → ContactIdentity row → conversation advisory → Conversation row →
-existing Message/read-state rows → outbox rows**. No code acquires a lower-order
-lock later. `FOR UPDATE` cannot protect an absent Conversation, hence the
-advisory conversation key and partial unique index are both required. A
-PostgreSQL deadlock or serialization failure is a typed retryable infrastructure
-error; only the application boundary may retry it, bounded and only for an
-idempotent command.
+The lock order for every core mutation is **Channel/membership → message
+idempotency advisory → existing Message path → identity advisory →
+ContactIdentity row → conversation advisory → Conversation row → outbox rows**.
+No code acquires a lower-order lock later. `FOR UPDATE` cannot protect an absent
+Conversation, hence the advisory conversation key and partial unique index are
+both required. A PostgreSQL deadlock or serialization failure is a typed
+retryable infrastructure error; only the application boundary may retry it,
+bounded and only for an idempotent command.
 
 Resolve locks the Conversation and writes with `WHERE id=$1 AND
 version=$expected_version`. If inbound already incremented it, Resolve returns

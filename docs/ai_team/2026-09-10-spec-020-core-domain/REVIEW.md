@@ -1,6 +1,6 @@
 # Независимый review: SPEC-020 первая core/outbox vertical
 
-Статус: `needs_changes`. Дата: 2026-09-10.
+Статус: `approve` для P1-rework. Дата: 2026-09-10.
 
 ## Область проверки
 
@@ -13,7 +13,9 @@
 
 ## Verdict
 
-`needs_changes`.
+Первичный review на SHA `6a60fc3` был `needs_changes`; его P1 findings
+закрыты повторной проверкой SHA `6e7b593b6708a2a8e65af2b6216cefa43caa48c7`.
+Для ограниченного P1-rework verdict — `approve`.
 
 Первая вертикаль действительно использует одну PostgreSQL transaction и
 реальный transaction-bound outbox writer. Но обработка duplicate inbound не
@@ -21,7 +23,7 @@
 ограничение утверждённой архитектуры о запрете скрытых triggers. Оба дефекта
 должны быть исправлены до QA.
 
-## Findings
+## Findings первичного review
 
 ### P1 — duplicate external message может создать лишний Conversation и вернуть противоречивый canonical result
 
@@ -101,3 +103,67 @@ mapping, concurrency rationale и test coverage; до этого вариант 
   независимый review и QA. В review обязательно предъявить оба новых duplicate
   сценария и проверку отсутствия лишних Contacts/Identities/Conversations,
   Messages, version increments и outbox events.
+
+---
+
+## Повторный review P1-rework
+
+Проверен diff `6a60fc3..6e7b593b6708a2a8e65af2b6216cefa43caa48c7`.
+
+### Закрытие P1: canonical duplicate inbound
+
+`ReceiveInbound` теперь после lock/read Channel берёт xact advisory lock по
+каноническому `(channel_id, external_message_id)` и вызывает
+`findCanonicalInbound` **до** identity/conversation resolution
+(`internal/core/inbound.go:77-93`). Canonical lookup возвращает Contact,
+Identity, Conversation и Message из одной уже сохранённой path, проверяя
+channel/contact consistency (`internal/core/inbound.go:158-180`). Поэтому
+изменённые provider sender/thread при retry больше не создают пустые facts.
+
+Новые remote integration tests проверяют именно пропущенные ранее сценарии:
+
+- последовательный duplicate с другими sender/thread возвращает все исходные
+  IDs и сохраняет ровно один Contact/Identity/Conversation/Message, два
+  исходных events и version `1`
+  (`tests/integration/core_domain_test.go:116-163`);
+- два конкурентных duplicate с разными sender/thread дают один canonical
+  result без unique-violation и без дополнительных facts/events/version
+  (`tests/integration/core_domain_test.go:195-253`).
+
+### Закрытие P1: скрытые triggers
+
+Applied migration `000003` не переписана. Новая checksummed migration
+`000004_remove_core_channel_triggers` удаляет оба triggers и обе PL/pgSQL
+functions, а version 4 зарегистрирована в migrator
+(`db/migrations/000004_remove_core_channel_triggers.up.sql:1-4`,
+`internal/platform/database/migrations.go:17`). Явные service checks для
+identity, conversation и canonical path добавлены в
+`internal/core/inbound.go:99-133,158-180`. Это соответствует первоначальному
+architecture contract, не меняя уже применённую migration 3.
+
+### Повторное evidence
+
+Независимо на remote dev выполнено только через project tools-container,
+без чтения или вывода runtime env/secrets:
+
+```text
+go test -count=1 -race ./tests/integration -run
+  TestReceiveInbound(Duplicate|RejectsInconsistentCanonicalMessagePath)
+exit code: 0
+ok github.com/NET-BEAR/ohelpdesck/tests/integration 1.186s
+```
+
+`git show --check 6e7b593b` не сообщил ошибок. Новый migration имеет
+согласованный `up`/`down`: forward удаляет legacy triggers/functions, rollback
+восстанавливает их ровно как прежнюю версию 3. Это не меняет production code
+и не скрывает rollback-semantics.
+
+### Неблокирующее follow-up
+
+`ARCHITECTURE.md:151-172` всё ещё описывает прежний порядок
+`Channel → identity → conversation → message`. Перед следующим core mutation
+его нужно синхронизировать с реализованным порядком
+`Channel → message-idempotency → identity → conversation`, чтобы последующие
+writer-ы не вводили конфликтующий lock order. Это не блокирует P1-rework:
+нынешний code и implementation evidence описывают фактическую гарантию, а
+других core mutators пока нет.
