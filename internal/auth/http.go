@@ -95,11 +95,11 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "user_already_exists")
 			return
 		}
-		h.userAdminChange("create", principal.UserID, user.ID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "validation_failed")
 			return
 		}
+		h.userAdminChange("create", principal.UserID, user.ID)
 		writeJSON(w, http.StatusCreated, safeUser(Principal{UserID: user.ID, Login: user.Login, Email: user.Email, Name: user.Name, Role: user.Role}, user.Status, nil))
 	case r.URL.Path == "/api/v1/permission-bundles" && r.Method == http.MethodGet:
 		principal, _, ok := h.authenticate(w, r, false)
@@ -177,7 +177,6 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "user_not_found")
 			return
 		}
-		h.userAdminChange("update", principal.UserID, user.ID)
 		if errors.Is(err, ErrForbidden) {
 			writeError(w, http.StatusConflict, "last_administrator")
 			return
@@ -190,6 +189,7 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "validation_failed")
 			return
 		}
+		h.userAdminChange("update", principal.UserID, user.ID)
 		writeJSON(w, http.StatusOK, safeUser(Principal{UserID: user.ID, Login: user.Login, Email: user.Email, Name: user.Name, Role: user.Role}, user.Status, nil))
 	default:
 		writeError(w, http.StatusNotFound, "not_found")

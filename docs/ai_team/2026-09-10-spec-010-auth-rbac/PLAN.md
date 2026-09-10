@@ -58,7 +58,7 @@
 3. Для неизвестного или disabled пользователя выполняется Argon2id comparison с runtime-only dummy hash; HTTP result по-прежнему нейтрален.
 4. Добавлены bounded-label Prometheus counters `auth_requests_total`, `auth_failures_total`, `authorization_denied_total`, `user_admin_changes_total` и structured security events. События не содержат login, password, cookie или CSRF.
 
-Выполнены targeted checks: `go test ./internal/auth ./internal/platform/telemetry ./internal/platform/runtime` и `go test ./tests/integration` — exit 0. Новый integration test запускает два concurrent disable двух administrators и подтверждает ровно одну successful mutation и одного оставшегося active administrator; отдельные capture tests проверяют metrics и отсутствие credentials/login в security logs. Далее обязательны полный verify, повторный независимый review и QA.
+Повторный review выявил два P2 в этом rework: success-audit должен выполняться только после успешной repository mutation, а concurrent test не может предполагать пустую persistent dev DB. Исправлено: вызов `userAdminChange` перемещён после полной обработки ошибок; capture test доказывает, что last-admin refusal не увеличивает counter. Concurrent test фиксирует исходное глобальное число active administrators, вычисляет допустимое число successful disable и подтверждает глобальный инвариант `active administrators >= 1`. `go test -count=3 ./tests/integration` и selected race tests прошли с exit 0. Далее обязательны полный verify, повторный независимый review и QA.
 
 ## Артефакты
 

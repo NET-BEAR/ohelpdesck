@@ -19,6 +19,7 @@ import (
 	"github.com/NET-BEAR/ohelpdesck/internal/platform/database"
 	"github.com/NET-BEAR/ohelpdesck/internal/platform/httpserver"
 	"github.com/NET-BEAR/ohelpdesck/internal/platform/telemetry"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func TestLocalPasswordLoginAndAuthorization(t *testing.T) {
@@ -236,8 +237,12 @@ func TestAdministrationBundlesAndSessionFailures(t *testing.T) {
 	if response := request(http.MethodPost, "/api/v1/auth/login", fmt.Sprintf(`{"login":%q,"password":"correct horse battery staple"}`, prefix+"-agent"), nil, ""); response.Code != http.StatusUnauthorized {
 		t.Fatalf("disabled user login: %d", response.Code)
 	}
+	updatesBefore := testutil.ToFloat64(metrics.UserAdminChanges.WithLabelValues("update"))
 	if response := request(http.MethodPatch, "/api/v1/users/"+admin.ID, `{"status":"disabled"}`, cookie, session.CSRFToken); response.Code != http.StatusConflict {
 		t.Fatalf("last admin disabled: %d", response.Code)
+	}
+	if updatesAfter := testutil.ToFloat64(metrics.UserAdminChanges.WithLabelValues("update")); updatesAfter != updatesBefore {
+		t.Fatalf("rejected last-admin update was audited as successful: before=%f after=%f", updatesBefore, updatesAfter)
 	}
 	if response := request(http.MethodPost, "/api/v1/auth/logout", "", cookie, session.CSRFToken); response.Code != http.StatusNoContent {
 		t.Fatalf("logout: %d", response.Code)
@@ -278,6 +283,10 @@ func TestConcurrentAdministratorDisableKeepsOneActiveAdministrator(t *testing.T)
 	}
 	first, second := create("-one"), create("-two")
 	defer func() { _, _ = pool.Exec(context.Background(), "DELETE FROM users WHERE login LIKE $1", prefix+"%") }()
+	var activeBefore int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM users WHERE role='administrator' AND status='active'").Scan(&activeBefore); err != nil {
+		t.Fatal(err)
+	}
 	start := make(chan struct{})
 	results := make(chan error, 2)
 	var wait sync.WaitGroup
@@ -303,11 +312,12 @@ func TestConcurrentAdministratorDisableKeepsOneActiveAdministrator(t *testing.T)
 			protected++
 		}
 	}
-	if successes != 1 || protected != 1 {
-		t.Fatalf("last-admin guard outcomes: success=%d protected=%d", successes, protected)
+	expectedSuccesses := min(2, max(0, activeBefore-1))
+	if successes != expectedSuccesses || protected != 2-expectedSuccesses {
+		t.Fatalf("last-admin guard outcomes: initial_active=%d success=%d protected=%d", activeBefore, successes, protected)
 	}
-	var active int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM users WHERE id = ANY($1) AND role='administrator' AND status='active'", []string{first.ID, second.ID}).Scan(&active); err != nil || active != 1 {
-		t.Fatalf("active administrators after concurrent update: count=%d err=%v", active, err)
+	var activeAfter int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM users WHERE role='administrator' AND status='active'").Scan(&activeAfter); err != nil || activeAfter < 1 {
+		t.Fatalf("active administrators after concurrent update: count=%d err=%v", activeAfter, err)
 	}
 }

@@ -54,3 +54,38 @@ SPEC требует `auth_requests_total`, `auth_failures_total`, `authorization
 `needs_changes`.
 
 До QA и deploy должны быть устранены оба P1; затем повторить независимый review и security-focused integration tests. P2 должны быть закрыты в этом P0 security slice, поскольку они соответствуют явно перечисленным требованиям SPEC-010.
+
+---
+
+## Повторный review security rework `ccc3cef` (2026-09-10)
+
+Проверен только rework прежних P1/P2. Предыдущие выводы по последней редакции:
+
+- **P1 last-admin race — устранён в коде.** [repository.go](/Users/krassus/github/ohelpdesck/internal/auth/repository.go:103) получает transaction-scoped PostgreSQL advisory lock перед загрузкой target и подсчётом active administrators. Поэтому второй concurrent transition читает состояние только после commit первого и получает `ErrForbidden`, если остался один administrator.
+- **P1 reverse-proxy-wide rate limit — устранён в коде.** Login теперь использует SHA-256 от trim/lower-case login ([http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:204), [http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:362)), а не `RemoteAddr`. Ключ не попадает в logs/metrics.
+- **P2 timing oracle unknown/disabled login — устранён в коде.** Независимо от наличия и статуса пользователя вызывается `VerifyPassword`: используется user hash либо singleton dummy Argon2id hash ([http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:210)).
+
+Повторно успешно выполнены:
+
+- `go test -race -count=1 ./internal/auth ./internal/platform/telemetry ./internal/platform/runtime ./tests/integration` — затронутые non-integration packages завершились exit 0; integration run требует корректировки ниже;
+- отдельный `go test -count=1 ./tests/integration -run TestConcurrentAdministratorDisableKeepsOneActiveAdministrator` — exit 0;
+- `go test -count=1 ./internal/auth ./internal/platform/telemetry` — exit 0;
+- OpenAPI validator и deliberate negative control — exit 0.
+
+### P2 — security audit/metric фиксирует user change ещё до подтверждения успешной мутации
+
+В create route `h.userAdminChange` вызывается между special-case `ErrConflict` и общей обработкой `err` ([http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:93)). Любая non-conflict ошибка repository записывается как успешное создание с пустым target ID, хотя HTTP возвращает `400`. В update route это же происходит до `ErrForbidden`, `ErrConflict` и общей error branch ([http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:175)). Например, отказ снятия последнего administrator попадёт в `user_admin_changes_total{operation="update"}` и event `user_administration_changed` как будто изменение применилось.
+
+Это искажает security audit и counter, требуемые SPEC-010. Перенести вызовы после `err == nil`; отдельно, при необходимости, фиксировать rejected action отдельным bounded event/result. Дополнить capture test: invalid update и last-admin refusal не должны увеличивать successful-change metric и не должны записывать successful-change event.
+
+### P2 — новый concurrent integration test зависит от глобального состояния общей dev БД
+
+Тест [auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:258) создаёт двух administrators, но его ожидание строго `successes == 1` не учитывает уже существующих active administrators. При наличии bootstrap `sysadmin` обе операции disable новых пользователей корректно могут быть успешными, однако тест объявит это defect. Во время повторного запуска набора `-count=3` это проявилось как failures `last admin disabled: 200` и `last-admin guard outcomes: success=2 protected=0`; одиночный запуск прошёл.
+
+Тест должен изолировать initial state (например, использовать ephemeral database per test) либо вычислять expected outcome из scoped/initial global count и проверять глобальный invariant `active administrators >= 1`. До этого full integration result нестабилен и не является достаточным evidence для QA.
+
+## Обновлённый verdict
+
+`needs_changes`.
+
+Первоначальные P1 закрыты реализацией, но до перехода к QA нужно исправить два P2: truthful security audit/metric и state-independent concurrent integration test. После этого повторить full `make verify`, независимый review и QA.
