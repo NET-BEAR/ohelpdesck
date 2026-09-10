@@ -131,3 +131,15 @@ SPEC требует `auth_requests_total`, `auth_failures_total`, `authorization
 ## Verdict QA coverage rework
 
 `needs_changes` — один P2 в test-only scope. После добавления deterministic barrier и two case-variant scenarios достаточно повторить narrow review и QA retest; production implementation менять не требуется.
+
+---
+
+## Финальный narrow review duplicate-create rework `9d8b627` (2026-09-10)
+
+`approve`.
+
+- Обе request goroutine сообщают readiness и ожидают общий закрываемый `start` channel; он закрывается только после `ready.Wait()` ([auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:226)). Это устраняет прежнюю возможность последовательного запуска.
+- Проверяются отдельно login collision, differing only by case при разных email, и email collision, differing only by case при разных login ([auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:257)). В каждом случае assertion требует ровно `201` и `409`.
+- После каждого race выполняется PostgreSQL assertion ровно одного persisted user по соответствующему normalized login/email selector ([auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:252)).
+
+Независимо выполнено: `docker compose --env-file .env -f deploy/compose.yml run --rm go go test -race -count=3 ./tests/integration` — exit 0, 131.559s. Production code не изменялся; security policy не ослаблена.
