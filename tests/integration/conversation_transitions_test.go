@@ -181,7 +181,7 @@ func TestConversationRejectsStaleVersionAfterInbound(t *testing.T) {
 		t.Fatalf("error=%v", err)
 	}
 	after, afterEvents := conversationSnapshot(t, ctx, pool, fixture.ConversationID)
-	if after.Status != core.ConversationOpen || after.Version != before.Version+1 || afterEvents != beforeEvents+1 {
+	if after.Status != core.ConversationOpen || after.Version != before.Version+1 || afterEvents != beforeEvents {
 		t.Fatalf("unexpected stale result: %+v events=%d", after, afterEvents)
 	}
 }
