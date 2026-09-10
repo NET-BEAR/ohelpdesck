@@ -1,0 +1,57 @@
+name: CI and dev delivery
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Bootstrap
+        run: make bootstrap
+      - name: Verify backend, database, frontend and OpenAPI
+        run: make verify
+      - name: Build and start complete runtime
+        run: make dev
+      - name: Runtime smoke
+        run: bash deploy/smoke.sh
+      - name: Stop isolated CI runtime
+        if: always()
+        run: docker compose --env-file .env -f deploy/compose.yml down -v
+
+  deploy-dev:
+    needs: verify
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/project-foundation')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: development
+    concurrency:
+      group: ohelpdesck-dev-deployment
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Deploy tested commit over pinned SSH
+        env:
+          DEV_SSH_KEY: ${{ secrets.DEV_SSH_KEY }}
+          DEV_SSH_KNOWN_HOSTS: ${{ secrets.DEV_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$DEV_SSH_KEY"
+          test -n "$DEV_SSH_KNOWN_HOSTS"
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$DEV_SSH_KEY" > "$HOME/.ssh/ohelpdesck_dev"
+          printf '%s\n' "$DEV_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          trap 'rm -f "$HOME/.ssh/ohelpdesck_dev"' EXIT
+          git archive --format=tar.gz HEAD | ssh -F /dev/null -i "$HOME/.ssh/ohelpdesck_dev" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 root@vm742476.vps.masterhost.tech "deploy $GITHUB_SHA"
