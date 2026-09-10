@@ -1,9 +1,11 @@
 DROP TABLE IF EXISTS outbox_events;
 DROP TABLE IF EXISTS conversation_read_states;
-DROP FUNCTION IF EXISTS verify_message_conversation_channel();
+DROP TRIGGER IF EXISTS messages_conversation_channel_guard ON messages;
 DROP TABLE IF EXISTS messages;
-DROP FUNCTION IF EXISTS verify_conversation_identity_channel();
+DROP TRIGGER IF EXISTS conversations_identity_channel_guard ON conversations;
 DROP TABLE IF EXISTS conversations;
+DROP FUNCTION IF EXISTS verify_message_conversation_channel();
+DROP FUNCTION IF EXISTS verify_conversation_identity_channel();
 DROP SEQUENCE IF EXISTS conversation_number_seq;
 DROP TABLE IF EXISTS channel_memberships;
 DROP TABLE IF EXISTS contact_identities;
