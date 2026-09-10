@@ -36,3 +36,9 @@ V8 coverage включает все production TS/TSX, включая bootstrap 
 Readiness client использует same-origin GET `/health/ready`, `Accept: application/json`, deadline 5 секунд, runtime-проверку JSON. Raw server/network errors пользователю не показываются. Query polling 30 секунд, явный retry, loading/error/success, error boundary, fallback route покрыты тестами. OpenAPI future business DTO не вводятся.
 
 Независимый review, QA и проверка remote browser принадлежат последующим ролям. Эти результаты — developer checks, не подтверждение полного SPEC-000 или развёртывания. Root-оркестратор должен включить этот раздел в task DOCUMENTATION.md; самостоятельная запись вне выделенного ownership не выполняется.
+
+## Исправление после независимого review: readiness contract
+
+Замечание runtime reviewer: generic checks пропускал пустой объект, отсутствующие обязательные зависимости и вне-контрактный `error`. Сверен actual `api/openapi.yaml` основного checkout: три обязательных поля; additionalProperties=false; postgres ok/unavailable; redis/object_storage ok/degraded. Успешный ответ дополнительно требует `status=ready` и `postgres=ok` согласно описанию HTTP 200. Клиент возвращает только успешный тип, non-2xx по-прежнему превращает в безопасную ошибку.
+
+До исправления добавлены regression cases: `npm test` exit 1, **9 failed / 18 passed**. После минимального изменения типа и runtime validator, обновления корректных UI fixtures: `npm run typecheck && npm run lint && npm test && npm run build` exit 0; **27 passed**, 2 suites. V8: **90.90% lines**, **92.85% statements**, **100% branches/functions**, api.ts/App.tsx — 100%. Покрытие не снизилось. Команда выполнена в прежнем Node 22.22.0 контейнере; dependencies не менялись. Production bundle JS gzip 87.28 kB. Требуется повторный независимый review/QA затронутой валидации; локальный GREEN не заменяет этот этап.
