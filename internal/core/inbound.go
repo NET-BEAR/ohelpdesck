@@ -92,7 +92,7 @@ func (s *ReceiveInboundService) ReceiveInbound(ctx context.Context, input Normal
 			return fmt.Errorf("identity lock: %w", err)
 		}
 		var contactID, identityID, identityChannelID uuid.UUID
-		err := tx.QueryRow(ctx, `SELECT contact_id,id,channel_id FROM contact_identities WHERE channel_id=$1 AND external_user_id=$2 FOR UPDATE`, input.ChannelID, input.Sender.ExternalUserID).Scan(&contactID, &identityID, &identityChannelID)
+		err = tx.QueryRow(ctx, `SELECT contact_id,id,channel_id FROM contact_identities WHERE channel_id=$1 AND external_user_id=$2 FOR UPDATE`, input.ChannelID, input.Sender.ExternalUserID).Scan(&contactID, &identityID, &identityChannelID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			contactID, identityID = uuid.New(), uuid.New()
 			if _, err = tx.Exec(ctx, `INSERT INTO contacts(id,name) VALUES($1,$2)`, contactID, input.Sender.DisplayName); err != nil {
