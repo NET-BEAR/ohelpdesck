@@ -109,3 +109,25 @@ SPEC требует `auth_requests_total`, `auth_failures_total`, `authorization
 `approve`.
 
 В проверенном P2 scope не осталось блокирующих security или correctness замечаний. Ограничение остаётся архитектурным и уже зафиксированным: in-memory per-process rate limiter не является distributed limit; для текущего одного API process это не отменяет защиту, а масштабирование API требует отдельного Redis-backed/durable policy в будущем этапе.
+
+---
+
+## Narrow review QA coverage rework `aa21e25` (2026-09-10)
+
+### P2 — duplicate-create scenario не доказывает требуемую concurrent case-insensitive uniqueness
+
+В [auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:220) обе goroutine используют один JSON body с одинаковыми login и email. Между их созданием и HTTP call нет start barrier ([auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:224)), поэтому scheduler вправе выполнить второй request только после завершения первого. Тогда текущая проверка `201` + `409` доказывает уже покрытый последовательный duplicate contract, а не конкурентную ветвь.
+
+Кроме того, acceptance criterion прямо требует collision `login` **или** `email` ignoring case. Новый test не посылает case variants, не изолирует одну collision dimension от другой и не проверяет persisted cardinality. PostgreSQL lower-case indexes существуют, но acceptance должен проверять их HTTP integration behaviour.
+
+Нужен barrier непосредственно перед двумя `POST`, отдельные cases как минимум для `(login differing only by case, different email)` и `(email differing only by case, different login)`, а после `201`/`409` — database assertion ровно одного persisted user для соответствующего normalized key. Это не требует production change.
+
+### Подтверждённое
+
+Добавленный rate-limit scenario корректно проходит HTTP boundary: пять wrong-password requests получают neutral `401`, шестой — `429`, `auth_failures_total{reason="rate_limited"}` равен 1, а login другого пользователя остаётся успешным ([auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:110)). Он не ослабляет policy и не зависит от `RemoteAddr`.
+
+Независимый `go test -count=3 ./tests/integration -run 'TestLocalPasswordLoginAndAuthorization|TestAdministrationBundlesAndSessionFailures'` завершился exit 0. Это подтверждает стабильность существующих assertions, но не устраняет описанный пробел спецификации concurrent/case-insensitive scenario.
+
+## Verdict QA coverage rework
+
+`needs_changes` — один P2 в test-only scope. После добавления deterministic barrier и two case-variant scenarios достаточно повторить narrow review и QA retest; production implementation менять не требуется.

@@ -62,7 +62,7 @@
 
 ### QA rework: закрытие coverage P2
 
-QA обнаружил отсутствующие acceptance-сценарии. Добавлены два deterministic HTTP integration tests: два одновременных `POST /api/v1/users` с одинаковыми login/email (ровно один `201`, один `409`), а также пять `401` и шестой `429` для одного login с успешным входом другого login и проверкой `auth_failures_total{reason="rate_limited"}`. Трёхкратный integration run прошёл. Изменение возвращается на narrow review и QA retest.
+QA обнаружил отсутствующие acceptance-сценарии. Добавлены два deterministic HTTP integration tests: параллельный `POST /api/v1/users` с отдельной case-insensitive collision login и collision email (у каждого pair ровно один `201`, один `409`, persisted cardinality=1), а также пять `401` и шестой `429` для одного login с успешным входом другого login и проверкой `auth_failures_total{reason="rate_limited"}`. Barrier синхронизирует оба create request до старта. `go test -race -count=3 ./tests/integration` прошёл. Изменение возвращается на narrow review и QA retest.
 
 ## Артефакты
 

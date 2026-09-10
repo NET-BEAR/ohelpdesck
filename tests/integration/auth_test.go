@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -217,30 +218,46 @@ func TestAdministrationBundlesAndSessionFailures(t *testing.T) {
 	if response := request(http.MethodPost, "/api/v1/users", fmt.Sprintf(`{"login":%q,"email":%q,"name":"Operator","password":"correct horse battery staple","role":"agent"}`, prefix+"-agent", prefix+"+agent@example.test"), cookie, session.CSRFToken); response.Code != http.StatusConflict {
 		t.Fatalf("duplicate user: %d", response.Code)
 	}
-	concurrentBody := fmt.Sprintf(`{"login":%q,"email":%q,"name":"Concurrent","password":"correct horse battery staple","role":"agent"}`, prefix+"-concurrent", prefix+"+concurrent@example.test")
-	concurrent := make(chan int, 2)
-	var createWait sync.WaitGroup
-	for range 2 {
-		createWait.Add(1)
-		go func() {
-			defer createWait.Done()
-			concurrent <- request(http.MethodPost, "/api/v1/users", concurrentBody, cookie, session.CSRFToken).Code
-		}()
-	}
-	createWait.Wait()
-	close(concurrent)
-	created, conflicted := 0, 0
-	for status := range concurrent {
-		if status == http.StatusCreated {
-			created++
+	concurrentCollision := func(loginA, emailA, loginB, emailB string) {
+		bodies := []string{
+			fmt.Sprintf(`{"login":%q,"email":%q,"name":"Concurrent","password":"correct horse battery staple","role":"agent"}`, loginA, emailA),
+			fmt.Sprintf(`{"login":%q,"email":%q,"name":"Concurrent","password":"correct horse battery staple","role":"agent"}`, loginB, emailB),
 		}
-		if status == http.StatusConflict {
-			conflicted++
+		start := make(chan struct{})
+		ready := sync.WaitGroup{}
+		responses := make(chan int, len(bodies))
+		for _, body := range bodies {
+			ready.Add(1)
+			go func(body string) {
+				ready.Done()
+				<-start
+				responses <- request(http.MethodPost, "/api/v1/users", body, cookie, session.CSRFToken).Code
+			}(body)
+		}
+		ready.Wait()
+		close(start)
+		created, conflicted := 0, 0
+		for range bodies {
+			status := <-responses
+			if status == http.StatusCreated {
+				created++
+			}
+			if status == http.StatusConflict {
+				conflicted++
+			}
+		}
+		if created != 1 || conflicted != 1 {
+			t.Fatalf("concurrent duplicate create statuses: created=%d conflict=%d", created, conflicted)
+		}
+		var persisted int
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM users WHERE lower(login)=lower($1) OR lower(email)=lower($2)", loginA, emailA).Scan(&persisted); err != nil || persisted != 1 {
+			t.Fatalf("concurrent duplicate persistence: count=%d err=%v", persisted, err)
 		}
 	}
-	if created != 1 || conflicted != 1 {
-		t.Fatalf("concurrent duplicate create statuses: created=%d conflict=%d", created, conflicted)
-	}
+	loginCollision := prefix + "-case-login"
+	concurrentCollision(loginCollision, prefix+"+login-one@example.test", strings.ToUpper(loginCollision), prefix+"+login-two@example.test")
+	emailCollision := prefix + "+case-email@example.test"
+	concurrentCollision(prefix+"-email-one", emailCollision, prefix+"-email-two", strings.ToUpper(emailCollision))
 	if response := request(http.MethodPost, "/api/v1/users", `{}`, cookie, session.CSRFToken); response.Code != http.StatusBadRequest {
 		t.Fatalf("invalid user accepted: %d", response.Code)
 	}
