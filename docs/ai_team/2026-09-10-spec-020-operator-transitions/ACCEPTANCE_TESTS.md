@@ -4,7 +4,7 @@
 
 | ID | Given | When | Then |
 |---|---|---|---|
-| AT-TR-001 | Conversation каждого status | Выполняются все разрешённые переходы | status/markers меняются, version увеличивается на 1, один outbox event committed |
+| AT-TR-001 | Conversation каждого status | Выполняются все разрешённые переходы | status/markers меняются, version увеличивается на 1, один нормативный outbox event committed; matrix проверяет точный event type, включая `conversation.reopened` |
 | AT-TR-002 | Conversation каждого status | Выполняется запрещённый переход | `invalid_conversation_transition`; status/version/outbox не меняются |
 | AT-TR-003 | `open`/`pending` version N | Resolve с `expected_version=N` | `resolved_at` использует DB time, `snoozed_until=NULL`, event содержит version N+1 |
 | AT-TR-004 | Conversation version N, concurrent inbound commits N+1 | Resolve с N | `version_conflict`, inbound state `open` остаётся, нет resolve event |
