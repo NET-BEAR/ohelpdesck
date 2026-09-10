@@ -98,15 +98,18 @@ func TestReceiveInboundCreatesCoreFactsAndOutbox(t *testing.T) {
 	if result.ContactID == uuid.Nil || result.IdentityID == uuid.Nil || result.ConversationID == uuid.Nil || result.MessageID == uuid.Nil {
 		t.Fatalf("canonical IDs missing: %+v", result)
 	}
-	var messages, events int
+	var messages, events, channelConsistent int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM messages WHERE id=$1`, result.MessageID).Scan(&messages); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE aggregate_id=$1 AND dispatched_at IS NULL`, result.MessageID).Scan(&events); err != nil {
 		t.Fatal(err)
 	}
-	if messages != 1 || events < 1 {
-		t.Fatalf("messages=%d events=%d", messages, events)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM messages m JOIN conversations c ON c.id=m.conversation_id JOIN contact_identities ci ON ci.id=c.contact_identity_id WHERE m.id=$1 AND m.channel_id=c.channel_id AND c.channel_id=ci.channel_id AND c.contact_id=ci.contact_id`, result.MessageID).Scan(&channelConsistent); err != nil {
+		t.Fatal(err)
+	}
+	if messages != 1 || events < 1 || channelConsistent != 1 {
+		t.Fatalf("messages=%d events=%d channel_consistent=%d", messages, events, channelConsistent)
 	}
 }
 
@@ -133,19 +136,29 @@ func TestReceiveInboundDuplicateDoesNotCreateAdditionalFacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := service.ReceiveInbound(ctx, input)
+	changedDelivery := input
+	changedDelivery.ExternalThreadID = "other-thread-" + uuid.NewString()
+	changedDelivery.Sender = core.ExternalSender{ExternalUserID: "other-customer-" + uuid.NewString(), DisplayName: "Unexpected retry sender"}
+	second, err := service.ReceiveInbound(ctx, changedDelivery)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !second.Duplicate || first.MessageID != second.MessageID || first.ConversationID != second.ConversationID {
+	if !second.Duplicate || first.MessageID != second.MessageID || first.ConversationID != second.ConversationID || first.IdentityID != second.IdentityID || first.ContactID != second.ContactID {
 		t.Fatalf("duplicate result: first=%+v second=%+v", first, second)
 	}
-	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM messages WHERE conversation_id=$1`, first.ConversationID).Scan(&count); err != nil {
+	var contacts, messages, identities, conversations, events int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM contacts c WHERE EXISTS (SELECT 1 FROM contact_identities ci WHERE ci.channel_id=$1 AND ci.contact_id=c.id)), (SELECT count(*) FROM messages WHERE channel_id=$1), (SELECT count(*) FROM contact_identities WHERE channel_id=$1), (SELECT count(*) FROM conversations WHERE channel_id=$1), (SELECT count(*) FROM outbox_events WHERE aggregate_id IN (SELECT id FROM messages WHERE channel_id=$1) OR aggregate_id IN (SELECT id FROM conversations WHERE channel_id=$1))`, channelID).Scan(&contacts, &messages, &identities, &conversations, &events); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("message count=%d", count)
+	if contacts != 1 || messages != 1 || identities != 1 || conversations != 1 || events != 2 {
+		t.Fatalf("duplicate created facts: contacts=%d messages=%d identities=%d conversations=%d events=%d", contacts, messages, identities, conversations, events)
+	}
+	var version int64
+	if err := pool.QueryRow(ctx, `SELECT version FROM conversations WHERE id=$1`, first.ConversationID).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 1 {
+		t.Fatalf("duplicate incremented conversation version=%d", version)
 	}
 }
 
@@ -197,6 +210,9 @@ func TestReceiveInboundDuplicateRaceReturnsCanonicalMessage(t *testing.T) {
 	}
 	defer cleanupCoreChannel(t, pool, channelID)
 	input := core.NormalizedInboundMessage{ChannelID: channelID, ExternalMessageID: "message-" + uuid.NewString(), ExternalThreadID: "thread-" + uuid.NewString(), Sender: core.ExternalSender{ExternalUserID: "customer-" + uuid.NewString()}, Text: "race", ContentType: core.ContentText}
+	inputs := []core.NormalizedInboundMessage{input, input}
+	inputs[1].ExternalThreadID = "concurrent-other-thread-" + uuid.NewString()
+	inputs[1].Sender = core.ExternalSender{ExternalUserID: "concurrent-other-customer-" + uuid.NewString()}
 	service := core.NewReceiveInboundService(pool)
 	start := make(chan struct{})
 	results := make([]core.ReceiveResult, 2)
@@ -207,7 +223,7 @@ func TestReceiveInboundDuplicateRaceReturnsCanonicalMessage(t *testing.T) {
 		go func(index int) {
 			defer wait.Done()
 			<-start
-			results[index], errs[index] = service.ReceiveInbound(ctx, input)
+			results[index], errs[index] = service.ReceiveInbound(ctx, inputs[index])
 		}(i)
 	}
 	close(start)
@@ -217,15 +233,22 @@ func TestReceiveInboundDuplicateRaceReturnsCanonicalMessage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if results[0].MessageID != results[1].MessageID || !results[0].Duplicate && !results[1].Duplicate {
+	if results[0].MessageID != results[1].MessageID || results[0].ConversationID != results[1].ConversationID || results[0].IdentityID != results[1].IdentityID || results[0].ContactID != results[1].ContactID || !results[0].Duplicate && !results[1].Duplicate {
 		t.Fatalf("race results=%+v %+v", results[0], results[1])
 	}
-	var messages int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM messages WHERE channel_id=$1 AND external_message_id=$2`, channelID, input.ExternalMessageID).Scan(&messages); err != nil {
+	var contacts, messages, identities, conversations, events int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM contacts c WHERE EXISTS (SELECT 1 FROM contact_identities ci WHERE ci.channel_id=$1 AND ci.contact_id=c.id)), (SELECT count(*) FROM messages WHERE channel_id=$1 AND external_message_id=$2), (SELECT count(*) FROM contact_identities WHERE channel_id=$1), (SELECT count(*) FROM conversations WHERE channel_id=$1), (SELECT count(*) FROM outbox_events WHERE aggregate_id IN (SELECT id FROM messages WHERE channel_id=$1) OR aggregate_id IN (SELECT id FROM conversations WHERE channel_id=$1))`, channelID, input.ExternalMessageID).Scan(&contacts, &messages, &identities, &conversations, &events); err != nil {
 		t.Fatal(err)
 	}
-	if messages != 1 {
-		t.Fatalf("messages=%d", messages)
+	if contacts != 1 || messages != 1 || identities != 1 || conversations != 1 || events != 2 {
+		t.Fatalf("race facts: contacts=%d messages=%d identities=%d conversations=%d events=%d", contacts, messages, identities, conversations, events)
+	}
+	var version int64
+	if err := pool.QueryRow(ctx, `SELECT version FROM conversations WHERE id=$1`, results[0].ConversationID).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 1 {
+		t.Fatalf("race incremented conversation version=%d", version)
 	}
 }
 

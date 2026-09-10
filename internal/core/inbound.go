@@ -74,11 +74,25 @@ func (s *ReceiveInboundService) ReceiveInbound(ctx context.Context, input Normal
 		if !enabled || status != "active" {
 			return ErrChannelDisabled
 		}
+		// This is the idempotency boundary. It must precede every fact mutation:
+		// a provider can replay one external message with inconsistent sender or
+		// thread attributes, and the first committed delivery is canonical.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, input.ChannelID.String()+"/message/"+input.ExternalMessageID); err != nil {
+			return fmt.Errorf("message lock: %w", err)
+		}
+		canonical, found, err := findCanonicalInbound(ctx, tx, input.ChannelID, input.ExternalMessageID)
+		if err != nil {
+			return err
+		}
+		if found {
+			result = canonical
+			return nil
+		}
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, input.ChannelID.String()+"/identity/"+input.Sender.ExternalUserID); err != nil {
 			return fmt.Errorf("identity lock: %w", err)
 		}
-		var contactID, identityID uuid.UUID
-		err := tx.QueryRow(ctx, `SELECT contact_id,id FROM contact_identities WHERE channel_id=$1 AND external_user_id=$2 FOR UPDATE`, input.ChannelID, input.Sender.ExternalUserID).Scan(&contactID, &identityID)
+		var contactID, identityID, identityChannelID uuid.UUID
+		err := tx.QueryRow(ctx, `SELECT contact_id,id,channel_id FROM contact_identities WHERE channel_id=$1 AND external_user_id=$2 FOR UPDATE`, input.ChannelID, input.Sender.ExternalUserID).Scan(&contactID, &identityID, &identityChannelID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			contactID, identityID = uuid.New(), uuid.New()
 			if _, err = tx.Exec(ctx, `INSERT INTO contacts(id,name) VALUES($1,$2)`, contactID, input.Sender.DisplayName); err != nil {
@@ -89,14 +103,19 @@ func (s *ReceiveInboundService) ReceiveInbound(ctx context.Context, input Normal
 			}
 		} else if err != nil {
 			return fmt.Errorf("identity lookup: %w", err)
+		} else if identityChannelID != input.ChannelID {
+			return fmt.Errorf("identity channel mismatch")
 		}
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, input.ChannelID.String()+"/conversation/"+input.ExternalThreadID+"/"+identityID.String()); err != nil {
 			return fmt.Errorf("conversation lock: %w", err)
 		}
-		var conversationID uuid.UUID
+		var conversationID, conversationContactID, conversationIdentityID, conversationChannelID uuid.UUID
 		var version int64
 		var created bool
-		err = tx.QueryRow(ctx, `SELECT id,version FROM conversations WHERE channel_id=$1 AND external_thread_id=$2 AND contact_identity_id=$3 AND is_current FOR UPDATE`, input.ChannelID, input.ExternalThreadID, identityID).Scan(&conversationID, &version)
+		err = tx.QueryRow(ctx, `SELECT id,version,contact_id,contact_identity_id,channel_id FROM conversations WHERE channel_id=$1 AND external_thread_id=$2 AND contact_identity_id=$3 AND is_current FOR UPDATE`, input.ChannelID, input.ExternalThreadID, identityID).Scan(&conversationID, &version, &conversationContactID, &conversationIdentityID, &conversationChannelID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("conversation lookup: %w", err)
+		}
 		var mutationTime time.Time
 		if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&mutationTime); err != nil {
 			return fmt.Errorf("mutation time: %w", err)
@@ -106,15 +125,8 @@ func (s *ReceiveInboundService) ReceiveInbound(ctx context.Context, input Normal
 			if _, err = tx.Exec(ctx, `INSERT INTO conversations(id,contact_id,contact_identity_id,channel_id,external_thread_id,status,waiting_since,last_inbound_at,last_activity_at,version) VALUES($1,$2,$3,$4,$5,'open',$6,$6,$6,1)`, conversationID, contactID, identityID, input.ChannelID, input.ExternalThreadID, mutationTime); err != nil {
 				return fmt.Errorf("conversation insert: %w", err)
 			}
-		}
-		var existing uuid.UUID
-		err = tx.QueryRow(ctx, `SELECT id FROM messages WHERE channel_id=$1 AND external_message_id=$2`, input.ChannelID, input.ExternalMessageID).Scan(&existing)
-		if err == nil {
-			result = ReceiveResult{ContactID: contactID, IdentityID: identityID, ConversationID: conversationID, MessageID: existing, Duplicate: true}
-			return nil
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("message lookup: %w", err)
+		} else if conversationContactID != contactID || conversationIdentityID != identityID || conversationChannelID != input.ChannelID {
+			return fmt.Errorf("conversation channel mismatch")
 		}
 		messageID := uuid.New()
 		if _, err = tx.Exec(ctx, `INSERT INTO messages(id,conversation_id,channel_id,external_message_id,direction,actor_type,content_type,text_content,html_content,status,received_at) VALUES($1,$2,$3,$4,'incoming','customer',$5,$6,$7,'received',$8)`, messageID, conversationID, input.ChannelID, input.ExternalMessageID, input.ContentType, nullIfBlank(input.Text), nullIfBlank(input.HTML), mutationTime); err != nil {
@@ -138,6 +150,34 @@ func (s *ReceiveInboundService) ReceiveInbound(ctx context.Context, input Normal
 		return nil
 	})
 	return result, err
+}
+
+// findCanonicalInbound reads all IDs from the already-persisted message path.
+// It is intentionally called before identity/conversation resolution so retries
+// cannot create facts from altered provider attributes.
+func findCanonicalInbound(ctx context.Context, tx pgx.Tx, channelID uuid.UUID, externalMessageID string) (ReceiveResult, bool, error) {
+	var result ReceiveResult
+	var messageChannelID, conversationChannelID, identityChannelID, conversationContactID uuid.UUID
+	err := tx.QueryRow(ctx, `
+		SELECT ci.contact_id, ci.id, c.id, m.id,
+		       m.channel_id, c.channel_id, ci.channel_id, c.contact_id
+		FROM messages m
+		JOIN conversations c ON c.id=m.conversation_id
+		JOIN contact_identities ci ON ci.id=c.contact_identity_id
+		WHERE m.channel_id=$1 AND m.external_message_id=$2`, channelID, externalMessageID).
+		Scan(&result.ContactID, &result.IdentityID, &result.ConversationID, &result.MessageID,
+			&messageChannelID, &conversationChannelID, &identityChannelID, &conversationContactID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ReceiveResult{}, false, nil
+	}
+	if err != nil {
+		return ReceiveResult{}, false, fmt.Errorf("canonical message lookup: %w", err)
+	}
+	if messageChannelID != channelID || conversationChannelID != channelID || identityChannelID != channelID || conversationContactID != result.ContactID {
+		return ReceiveResult{}, false, fmt.Errorf("canonical message channel mismatch")
+	}
+	result.Duplicate = true
+	return result, true, nil
 }
 
 func blank(v string) bool { return strings.TrimSpace(v) == "" }
