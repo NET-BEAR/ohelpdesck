@@ -1,15 +1,18 @@
 package auth
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/NET-BEAR/ohelpdesck/internal/platform/telemetry"
 )
 
 const sessionCookie = "ohelpdesck_session"
@@ -18,10 +21,21 @@ type HTTPHandler struct {
 	repository   *Repository
 	secureCookie bool
 	limiter      *loginLimiter
+	metrics      *telemetry.Metrics
+	log          *slog.Logger
 }
 
-func NewHTTPHandler(repository *Repository, secureCookie bool) http.Handler {
-	return &HTTPHandler{repository: repository, secureCookie: secureCookie, limiter: newLoginLimiter(5, 15*time.Minute)}
+type Observability struct {
+	Metrics *telemetry.Metrics
+	Log     *slog.Logger
+}
+
+func NewHTTPHandler(repository *Repository, secureCookie bool, observability ...Observability) http.Handler {
+	h := &HTTPHandler{repository: repository, secureCookie: secureCookie, limiter: newLoginLimiter(5, 15*time.Minute)}
+	if len(observability) > 0 {
+		h.metrics, h.log = observability[0].Metrics, observability[0].Log
+	}
+	return h
 }
 
 func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +95,7 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "user_already_exists")
 			return
 		}
+		h.userAdminChange("create", principal.UserID, user.ID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "validation_failed")
 			return
@@ -162,6 +177,7 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "user_not_found")
 			return
 		}
+		h.userAdminChange("update", principal.UserID, user.ID)
 		if errors.Is(err, ErrForbidden) {
 			writeError(w, http.StatusConflict, "last_administrator")
 			return
@@ -181,16 +197,25 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) login(w http.ResponseWriter, r *http.Request) {
-	if !h.limiter.Allow(r.RemoteAddr) {
-		writeError(w, http.StatusTooManyRequests, "login_rate_limited")
-		return
-	}
 	var input struct{ Login, Password string }
 	if !decodeJSON(w, r, &input) {
 		return
 	}
+	key := loginRateLimitKey(input.Login)
+	if !h.limiter.Allow(key) {
+		h.authFailure("rate_limited")
+		writeError(w, http.StatusTooManyRequests, "login_rate_limited")
+		return
+	}
 	user, err := h.repository.ByLogin(r.Context(), input.Login)
-	if err != nil || user.Status != Active || !VerifyPassword(user.PasswordHash, input.Password) {
+	hash := dummyPasswordHash()
+	validUser := err == nil && user.Status == Active
+	if err == nil {
+		hash = user.PasswordHash
+	}
+	validPassword := VerifyPassword(hash, input.Password)
+	if !validUser || !validPassword {
+		h.authFailure("invalid_credentials")
 		writeError(w, http.StatusUnauthorized, "unauthenticated")
 		return
 	}
@@ -199,7 +224,8 @@ func (h *HTTPHandler) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error")
 		return
 	}
-	h.limiter.Reset(r.RemoteAddr)
+	h.limiter.Reset(key)
+	h.authRequest("success")
 	h.setCookie(w, token)
 	writeJSON(w, http.StatusOK, map[string]string{"csrf_token": csrf})
 }
@@ -207,17 +233,20 @@ func (h *HTTPHandler) login(w http.ResponseWriter, r *http.Request) {
 func (h *HTTPHandler) authenticate(w http.ResponseWriter, r *http.Request, mutation bool) (Principal, string, bool) {
 	cookie, err := r.Cookie(sessionCookie)
 	if err != nil || cookie.Value == "" {
+		h.authFailure("session_invalid")
 		writeError(w, http.StatusUnauthorized, "unauthenticated")
 		return Principal{}, "", false
 	}
 	principal, csrfHash, err := h.repository.PrincipalBySession(r.Context(), cookie.Value)
 	if err != nil {
+		h.authFailure("session_invalid")
 		writeError(w, http.StatusUnauthorized, "unauthenticated")
 		return Principal{}, "", false
 	}
 	if mutation {
 		provided := r.Header.Get("X-CSRF-Token")
 		if provided == "" || subtle.ConstantTimeCompare([]byte(csrfHash), []byte(HashSecret(provided))) != 1 {
+			h.authFailure("csrf_invalid")
 			writeError(w, http.StatusForbidden, "csrf_invalid")
 			return Principal{}, "", false
 		}
@@ -237,6 +266,12 @@ func (h *HTTPHandler) allowed(w http.ResponseWriter, r *http.Request, principal 
 		}
 	}
 	if !Allowed(principal.Role, permission) {
+		if h.metrics != nil {
+			h.metrics.AuthorizationDenied.WithLabelValues(string(permission)).Inc()
+		}
+		if h.log != nil {
+			h.log.Warn("security authorization denied", "event", "authorization_denied", "actor_id", principal.UserID, "permission", permission)
+		}
 		writeError(w, http.StatusForbidden, "forbidden")
 		return false
 	}
@@ -321,9 +356,41 @@ func (l *loginLimiter) Reset(key string) {
 	delete(l.attempt, limiterKey(key))
 }
 func limiterKey(remoteAddress string) string {
-	host, _, err := net.SplitHostPort(remoteAddress)
-	if err == nil && host != "" {
-		return host
-	}
 	return remoteAddress
+}
+
+func loginRateLimitKey(login string) string {
+	value := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(login))))
+	return string(value[:])
+}
+
+var cachedDummyPasswordHash string
+var dummyPasswordOnce sync.Once
+
+func dummyPasswordHash() string {
+	dummyPasswordOnce.Do(func() { cachedDummyPasswordHash, _ = HashPassword("local-auth-dummy-password") })
+	return cachedDummyPasswordHash
+}
+
+func (h *HTTPHandler) authRequest(result string) {
+	if h.metrics != nil {
+		h.metrics.AuthRequests.WithLabelValues(result).Inc()
+	}
+}
+func (h *HTTPHandler) authFailure(reason string) {
+	if h.metrics != nil {
+		h.metrics.AuthRequests.WithLabelValues("failure").Inc()
+		h.metrics.AuthFailures.WithLabelValues(reason).Inc()
+	}
+	if h.log != nil {
+		h.log.Warn("security authentication failed", "event", "authentication_failed", "reason", reason)
+	}
+}
+func (h *HTTPHandler) userAdminChange(operation, actorID, targetID string) {
+	if h.metrics != nil {
+		h.metrics.UserAdminChanges.WithLabelValues(operation).Inc()
+	}
+	if h.log != nil {
+		h.log.Info("security user administration changed", "event", "user_administration_changed", "operation", operation, "actor_id", actorID, "target_id", targetID)
+	}
 }

@@ -30,9 +30,13 @@ func TestTelemetry(t *testing.T) {
 	m := NewMetrics(func() float64 { return 2 }, func() float64 { return 3 })
 	m.Requests.WithLabelValues("GET", "200").Inc()
 	m.Duration.Observe(.1)
+	m.AuthRequests.WithLabelValues("success").Inc()
+	m.AuthFailures.WithLabelValues("invalid_credentials").Inc()
+	m.AuthorizationDenied.WithLabelValues("users.manage").Inc()
+	m.UserAdminChanges.WithLabelValues("create").Inc()
 	w := httptest.NewRecorder()
 	m.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
-	for _, s := range []string{"http_requests_total", "http_request_duration_seconds", "process_start_time_seconds", "db_pool_acquired_connections", "db_pool_idle_connections"} {
+	for _, s := range []string{"http_requests_total", "http_request_duration_seconds", "auth_requests_total", "auth_failures_total", "authorization_denied_total", "user_admin_changes_total", "process_start_time_seconds", "db_pool_acquired_connections", "db_pool_idle_connections"} {
 		if !strings.Contains(w.Body.String(), s) {
 			t.Fatal(s)
 		}

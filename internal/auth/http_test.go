@@ -29,26 +29,15 @@ func TestHTTPInputGuardsAndRateLimiter(t *testing.T) {
 		t.Fatal("trailing JSON accepted")
 	}
 	limiter := newLoginLimiter(2, time.Minute)
-	if !limiter.Allow("127.0.0.1:1") || !limiter.Allow("127.0.0.1:2") || limiter.Allow("127.0.0.1:3") {
-		t.Fatal("rate limit did not use remote host")
+	firstLogin, secondLogin := loginRateLimitKey("Alice"), loginRateLimitKey("Bob")
+	if firstLogin == secondLogin || !limiter.Allow(firstLogin) || !limiter.Allow(firstLogin) || limiter.Allow(firstLogin) || !limiter.Allow(secondLogin) {
+		t.Fatal("rate limit is not isolated by normalized login")
 	}
-	limiter.Reset("127.0.0.1:4")
-	if !limiter.Allow("127.0.0.1:5") || limiterKey("invalid") != "invalid" {
+	limiter.Reset(firstLogin)
+	if !limiter.Allow(firstLogin) || limiterKey("invalid") != "invalid" {
 		t.Fatal("rate limit reset/key fallback failed")
 	}
 	if !handler.(*HTTPHandler).secureCookie {
 		t.Fatal("secure-cookie policy lost")
-	}
-	for attempt := 0; attempt < 6; attempt++ {
-		response := httptest.NewRecorder()
-		request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader("{"))
-		request.RemoteAddr = "127.0.0.3:1234"
-		handler.ServeHTTP(response, request)
-		if attempt < 5 && response.Code != http.StatusBadRequest {
-			t.Fatalf("unexpected pre-limit status %d", response.Code)
-		}
-		if attempt == 5 && response.Code != http.StatusTooManyRequests {
-			t.Fatalf("missing login rate limit: %d", response.Code)
-		}
 	}
 }

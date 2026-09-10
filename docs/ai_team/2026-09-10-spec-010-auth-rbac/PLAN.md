@@ -1,6 +1,6 @@
 # Реализация SPEC-010: Authentication, Users, RBAC
 
-Статус задачи: `in_implementation`. Дата: 2026-09-10. Владелец: оркестратор.
+Статус задачи: `in_review`. Дата: 2026-09-10. Владелец: оркестратор.
 
 ## Цель и границы
 
@@ -43,11 +43,22 @@
 5. Обновить OpenAPI, UI login/admin client contracts, metrics/security logs и CI.
 6. Провести независимые code review и QA, включая local test issuer/JWKS rotation, callback replay, disabled user и конкурентные invite/user flows.
 
-## Реализация: передача на review
+## Реализация и повторная передача на review
 
 Реализованы ordered/checksummed migrations до `users`, permission bundles, assignments и server-side sessions; `internal/auth` с Argon2id, opaque session/CSRF, rate limiter, local login/logout, `/api/v1/me`, user/bundle administration и last-active-administrator guard. `bootstrap-admin` создаёт единственный initial `sysadmin` только из runtime `INITIAL_ADMIN_PASSWORD`; source/runtime logs не получают raw password. HTTP contract и React login/profile client обновлены.
 
-Подтверждён RED: до `internal/auth` новые auth tests не компилировались. GREEN: Go integration tests прошли, `make test-integration` — 83.39% statements и 80.02% executable block lines. Полный `make verify` до frontend addition прошёл backend/frontend/OpenAPI/delivery/vet/race; после frontend addition отдельно прошли frontend typecheck/tests/build и OpenAPI validation. Финальный полный verify, reviewer и QA ещё обязательны.
+Подтверждён RED: до `internal/auth` новые auth tests не компилировались. GREEN: Go integration tests прошли, `make test-integration` — 83.39% statements и 80.02% executable block lines. После первоначального независимого review выявлены P1/P2, поэтому первоначальный implementation result считается `superseded` для security-rework.
+
+### Security rework по REVIEW.md
+
+Минимальная точка возврата: repository transaction, login limiter/verification, telemetry и затронутые acceptance tests. Исправлено:
+
+1. `Repository.Update` получает transaction-scoped PostgreSQL advisory lock перед чтением роли и статуса. Это сериализует параллельные transitions и не позволяет двум транзакциям снять двух последних active administrators одновременно.
+2. Limiter ключуется SHA-256 от нормализованного login, а не `RemoteAddr`; nginx больше не может объединить всех клиентов в один лимит. Ключ и исходный login не логируются.
+3. Для неизвестного или disabled пользователя выполняется Argon2id comparison с runtime-only dummy hash; HTTP result по-прежнему нейтрален.
+4. Добавлены bounded-label Prometheus counters `auth_requests_total`, `auth_failures_total`, `authorization_denied_total`, `user_admin_changes_total` и structured security events. События не содержат login, password, cookie или CSRF.
+
+Выполнены targeted checks: `go test ./internal/auth ./internal/platform/telemetry ./internal/platform/runtime` и `go test ./tests/integration` — exit 0. Новый integration test запускает два concurrent disable двух administrators и подтверждает ровно одну successful mutation и одного оставшегося active administrator; отдельные capture tests проверяют metrics и отсутствие credentials/login в security logs. Далее обязательны полный verify, повторный независимый review и QA.
 
 ## Артефакты
 

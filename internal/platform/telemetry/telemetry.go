@@ -39,15 +39,27 @@ func Init(settings ...string) func(context.Context) error {
 }
 
 type Metrics struct {
-	Registry *prometheus.Registry
-	Requests *prometheus.CounterVec
-	Duration prometheus.Histogram
+	Registry            *prometheus.Registry
+	Requests            *prometheus.CounterVec
+	Duration            prometheus.Histogram
+	AuthRequests        *prometheus.CounterVec
+	AuthFailures        *prometheus.CounterVec
+	AuthorizationDenied *prometheus.CounterVec
+	UserAdminChanges    *prometheus.CounterVec
 }
 
 func NewMetrics(acquired, idle func() float64) *Metrics {
 	r := prometheus.NewRegistry()
-	m := &Metrics{r, prometheus.NewCounterVec(prometheus.CounterOpts{Name: "http_requests_total", Help: "HTTP requests"}, []string{"method", "status"}), prometheus.NewHistogram(prometheus.HistogramOpts{Name: "http_request_duration_seconds", Help: "HTTP latency"})}
-	r.MustRegister(m.Requests, m.Duration, prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "db_pool_acquired_connections", Help: "Acquired connections"}, acquired), prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "db_pool_idle_connections", Help: "Idle connections"}, idle), prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "process_start_time_seconds", Help: "Process start"}, func() func() float64 { start := float64(time.Now().Unix()); return func() float64 { return start } }()))
+	m := &Metrics{
+		Registry:            r,
+		Requests:            prometheus.NewCounterVec(prometheus.CounterOpts{Name: "http_requests_total", Help: "HTTP requests"}, []string{"method", "status"}),
+		Duration:            prometheus.NewHistogram(prometheus.HistogramOpts{Name: "http_request_duration_seconds", Help: "HTTP latency"}),
+		AuthRequests:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "auth_requests_total", Help: "Authentication requests"}, []string{"result"}),
+		AuthFailures:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "auth_failures_total", Help: "Authentication failures"}, []string{"reason"}),
+		AuthorizationDenied: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "authorization_denied_total", Help: "Authorization denials"}, []string{"permission"}),
+		UserAdminChanges:    prometheus.NewCounterVec(prometheus.CounterOpts{Name: "user_admin_changes_total", Help: "User administration changes"}, []string{"operation"}),
+	}
+	r.MustRegister(m.Requests, m.Duration, m.AuthRequests, m.AuthFailures, m.AuthorizationDenied, m.UserAdminChanges, prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "db_pool_acquired_connections", Help: "Acquired connections"}, acquired), prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "db_pool_idle_connections", Help: "Idle connections"}, idle), prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "process_start_time_seconds", Help: "Process start"}, func() func() float64 { start := float64(time.Now().Unix()); return func() float64 { return start } }()))
 	return m
 }
 func (m *Metrics) Handler() http.Handler {

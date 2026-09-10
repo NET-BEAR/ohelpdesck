@@ -6,16 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/NET-BEAR/ohelpdesck/internal/auth"
 	"github.com/NET-BEAR/ohelpdesck/internal/platform/database"
 	"github.com/NET-BEAR/ohelpdesck/internal/platform/httpserver"
+	"github.com/NET-BEAR/ohelpdesck/internal/platform/telemetry"
 )
 
 func TestLocalPasswordLoginAndAuthorization(t *testing.T) {
@@ -42,7 +45,9 @@ func TestLocalPasswordLoginAndAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _, _ = pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", agent.ID) }()
-	h := httpserver.NewApplication(nil, "", nil, auth.NewHTTPHandler(repository, false))
+	metrics := telemetry.NewMetrics(func() float64 { return 0 }, func() float64 { return 0 })
+	var securityLogs bytes.Buffer
+	h := httpserver.NewApplication(nil, "", metrics, auth.NewHTTPHandler(repository, false, auth.Observability{Metrics: metrics, Log: slog.New(slog.NewJSONHandler(&securityLogs, nil))}))
 
 	login := func(login, password string) *httptest.ResponseRecorder {
 		body, _ := json.Marshal(map[string]string{"login": login, "password": password})
@@ -87,6 +92,16 @@ func TestLocalPasswordLoginAndAuthorization(t *testing.T) {
 	if createResponse.Code != http.StatusForbidden {
 		t.Fatalf("agent was allowed to manage users: %d", createResponse.Code)
 	}
+	metricsResponse := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(metricsResponse, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	for _, metric := range []string{"auth_requests_total", "auth_failures_total", "authorization_denied_total"} {
+		if !bytes.Contains(metricsResponse.Body.Bytes(), []byte(metric)) {
+			t.Fatalf("missing security metric %s", metric)
+		}
+	}
+	if bytes.Contains(securityLogs.Bytes(), []byte("correct horse battery staple")) || bytes.Contains(securityLogs.Bytes(), []byte(admin.Login)) {
+		t.Fatal("security log leaked credentials or login")
+	}
 	badCSRF := httptest.NewRequest(http.MethodPost, "/api/v1/users", bytes.NewBufferString(`{}`))
 	badCSRF.AddCookie(cookie)
 	badCSRFResponse := httptest.NewRecorder()
@@ -118,7 +133,9 @@ func TestAdministrationBundlesAndSessionFailures(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), "DELETE FROM users WHERE login LIKE $1", prefix+"%")
 		_, _ = pool.Exec(context.Background(), "DELETE FROM permission_bundles WHERE name LIKE $1", prefix+"%")
 	}()
-	h := httpserver.NewApplication(nil, "", nil, auth.NewHTTPHandler(repository, false))
+	metrics := telemetry.NewMetrics(func() float64 { return 0 }, func() float64 { return 0 })
+	var securityLogs bytes.Buffer
+	h := httpserver.NewApplication(nil, "", metrics, auth.NewHTTPHandler(repository, false, auth.Observability{Metrics: metrics, Log: slog.New(slog.NewJSONHandler(&securityLogs, nil))}))
 	request := func(method, path, body string, cookie *http.Cookie, csrf string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, bytes.NewBufferString(body))
 		if cookie != nil {
@@ -227,5 +244,70 @@ func TestAdministrationBundlesAndSessionFailures(t *testing.T) {
 	}
 	if response := request(http.MethodGet, "/api/v1/me", "", cookie, ""); response.Code != http.StatusUnauthorized {
 		t.Fatalf("revoked session accepted: %d", response.Code)
+	}
+	metricsResponse := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(metricsResponse, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !bytes.Contains(metricsResponse.Body.Bytes(), []byte("user_admin_changes_total")) {
+		t.Fatal("missing user administration metric")
+	}
+	if bytes.Contains(securityLogs.Bytes(), []byte("correct horse battery staple")) || bytes.Contains(securityLogs.Bytes(), []byte(admin.Login)) {
+		t.Fatal("security log leaked credentials or login")
+	}
+}
+
+func TestConcurrentAdministratorDisableKeepsOneActiveAdministrator(t *testing.T) {
+	required(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := database.Open(ctx, os.Getenv("DATABASE_URL"), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if _, err := pool.Migrate(ctx, "up"); err != nil {
+		t.Fatal(err)
+	}
+	repository := auth.NewRepository(pool)
+	prefix := "admin-race-" + time.Now().UTC().Format("20060102150405.000000000")
+	create := func(suffix string) auth.User {
+		user, err := repository.Create(ctx, auth.CreateUser{Login: prefix + suffix, Email: prefix + suffix + "@example.test", Name: "Admin", Password: "correct horse battery staple", Role: auth.Administrator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return user
+	}
+	first, second := create("-one"), create("-two")
+	defer func() { _, _ = pool.Exec(context.Background(), "DELETE FROM users WHERE login LIKE $1", prefix+"%") }()
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var wait sync.WaitGroup
+	for _, id := range []string{first.ID, second.ID} {
+		wait.Add(1)
+		go func(id string) {
+			defer wait.Done()
+			<-start
+			status := auth.Disabled
+			_, err := repository.Update(context.Background(), id, auth.UpdateUser{Status: &status})
+			results <- err
+		}(id)
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	successes, protected := 0, 0
+	for err := range results {
+		if err == nil {
+			successes++
+		}
+		if errors.Is(err, auth.ErrForbidden) {
+			protected++
+		}
+	}
+	if successes != 1 || protected != 1 {
+		t.Fatalf("last-admin guard outcomes: success=%d protected=%d", successes, protected)
+	}
+	var active int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM users WHERE id = ANY($1) AND role='administrator' AND status='active'", []string{first.ID, second.ID}).Scan(&active); err != nil || active != 1 {
+		t.Fatalf("active administrators after concurrent update: count=%d err=%v", active, err)
 	}
 }

@@ -98,6 +98,11 @@ func (r *Repository) List(ctx context.Context) ([]User, error) {
 func (r *Repository) Update(ctx context.Context, id string, input UpdateUser) (User, error) {
 	var result User
 	err := r.db.WithinTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// All role/status transitions share this lock, so two concurrent updates
+		// cannot each remove a different active administrator.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(10010)`); err != nil {
+			return fmt.Errorf("administrator lock failed")
+		}
 		var current User
 		if err := tx.QueryRow(ctx, `SELECT id, login, email, name, password_hash, role, status FROM users WHERE id=$1 FOR UPDATE`, id).Scan(&current.ID, &current.Login, &current.Email, &current.Name, &current.PasswordHash, &current.Role, &current.Status); errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
