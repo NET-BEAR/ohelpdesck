@@ -1,0 +1,62 @@
+openapi: 3.1.0
+info:
+  title: OHelpdesck Foundation API
+  version: 0.1.0
+paths:
+  /health/live:
+    get:
+      operationId: liveness
+      responses:
+        '200':
+          description: Process is alive independently of dependencies
+          headers:
+            X-Request-ID:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: {type: string, const: live}
+  /health/ready:
+    get:
+      operationId: readiness
+      responses:
+        '200':
+          description: PostgreSQL ready; optional dependencies may be degraded
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Readiness'}
+        '503':
+          description: PostgreSQL unavailable
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Readiness'}
+components:
+  schemas:
+    Readiness:
+      type: object
+      required: [status, checks]
+      properties:
+        status: {type: string, enum: [ready, not_ready]}
+        checks:
+          type: object
+          required: [postgres, redis, object_storage]
+          additionalProperties: false
+          properties:
+            postgres: {type: string, enum: [ok, unavailable]}
+            redis: {type: string, enum: [ok, degraded]}
+            object_storage: {type: string, enum: [ok, degraded]}
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, details, request_id]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            details: {type: object, additionalProperties: {type: string}}
+            request_id: {type: string}
