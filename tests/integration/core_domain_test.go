@@ -325,7 +325,9 @@ func TestReceiveInboundRejectsInconsistentCanonicalMessagePath(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE conversations SET channel_id=$2 WHERE id=$1`, first.ConversationID, otherChannelID); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _, _ = pool.Exec(context.Background(), `UPDATE conversations SET channel_id=$2 WHERE id=$1`, first.ConversationID, channelID) }()
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `UPDATE conversations SET channel_id=$2 WHERE id=$1`, first.ConversationID, channelID)
+	}()
 	if _, err := service.ReceiveInbound(ctx, input); err == nil || err.Error() != "canonical message channel mismatch" {
 		t.Fatalf("error=%v", err)
 	}
