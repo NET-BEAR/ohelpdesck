@@ -45,7 +45,7 @@ func safeAttributes(attrs []attribute.KeyValue) []attribute.KeyValue {
 	result := make([]attribute.KeyValue, 0, len(attrs))
 	for _, a := range attrs {
 		key := strings.ToLower(string(a.Key))
-		sensitive := key == "enduser.id" || key == "exception.message" || key == "exception.stacktrace" || key == "url.query"
+		sensitive := key == "enduser.id" || key == "exception.message" || key == "exception.stacktrace" || key == "url.query" || key == "url.path" || key == "http.target"
 		for _, fragment := range []string{"password", "secret", "token", "authorization", "cookie"} {
 			sensitive = sensitive || strings.Contains(key, fragment)
 		}
@@ -58,6 +58,8 @@ func safeAttributes(attrs []attribute.KeyValue) []attribute.KeyValue {
 				continue
 			}
 			parsed.User = nil
+			parsed.Path = ""
+			parsed.RawPath = ""
 			parsed.RawQuery = ""
 			parsed.ForceQuery = false
 			parsed.Fragment = ""

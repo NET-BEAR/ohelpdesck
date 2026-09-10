@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -106,11 +107,11 @@ func TestHTTPTracingPrivacyPreservesRequest(t *testing.T) {
 	var received atomic.Bool
 	server := httptest.NewServer(otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, _, ok := r.BasicAuth()
-		received.Store(r.URL.Query().Get("token") == "query-sentinel" && ok && user == "identity-sentinel")
+		received.Store(r.URL.Query().Get("token") == "query-sentinel" && r.URL.Path == "/botpath-sentinel/" && ok && user == "identity-sentinel")
 		w.WriteHeader(204)
 	}), "inbound"))
 	defer server.Close()
-	target := strings.Replace(server.URL, "http://", "http://identity-sentinel:password-sentinel@", 1) + "/?token=query-sentinel"
+	target := strings.Replace(server.URL, "http://", "http://identity-sentinel:password-sentinel@", 1) + "/botpath-sentinel/?token=query-sentinel"
 	resp, e := HTTPClient().Get(target)
 	if e != nil {
 		t.Fatal("network call failed")
@@ -124,9 +125,48 @@ func TestHTTPTracingPrivacyPreservesRequest(t *testing.T) {
 		t.Fatal("tracing disabled")
 	}
 	data, _ := json.Marshal(spans)
-	for _, secret := range []string{"query-sentinel", "identity-sentinel", "password-sentinel"} {
+	for _, secret := range []string{"query-sentinel", "identity-sentinel", "password-sentinel", "path-sentinel"} {
 		if bytes.Contains(data, []byte(secret)) {
 			t.Fatal("HTTP span leaks " + secret)
+		}
+	}
+}
+
+func TestActualCollectorFailureRedaction(t *testing.T) {
+	var logs, standard bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&standard)
+	defer log.SetOutput(previousOutput)
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+	t.Setenv("OTEL_BSP_SCHEDULE_DELAY", "1")
+	received := make(chan struct{}, 1)
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		_, _ = io.WriteString(w, "collector-body-sentinel")
+		received <- struct{}{}
+	}))
+	defer collector.Close()
+	stop := Init("collector-test", collector.URL+"/collector-path-sentinel")
+	_, span := otel.Tracer("collector-test").Start(context.Background(), "actual-export")
+	span.End()
+	select {
+	case <-received:
+	case <-time.After(3 * time.Second):
+		_ = stop(context.Background())
+		t.Fatal("collector did not receive actual OTLP request")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = stop(ctx)
+	captured := logs.String() + standard.String()
+	if !strings.Contains(captured, "telemetry operation failed") {
+		t.Fatal("collector failure did not reach safe error handler")
+	}
+	for _, secret := range []string{"collector-body-sentinel", "collector-path-sentinel"} {
+		if strings.Contains(captured, secret) {
+			t.Fatal("collector failure leaks secret")
 		}
 	}
 }

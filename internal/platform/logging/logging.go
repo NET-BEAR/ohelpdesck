@@ -14,7 +14,7 @@ func New(w io.Writer, service, environment string) *slog.Logger {
 		case slog.MessageKey:
 			a.Key = "message"
 		}
-		k := strings.ToLower(strings.Join(append(groups, a.Key), "."))
+		k := strings.ToLower(strings.Join(groups, ".") + "." + a.Key)
 		for _, s := range []string{"password", "secret", "token", "authorization", "cookie", "database_url", "redis_url", "access_key"} {
 			if strings.Contains(k, s) {
 				a.Value = slog.StringValue("[REDACTED]")
