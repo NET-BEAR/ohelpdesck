@@ -6,3 +6,4 @@
 | [2026-09-10-spec-010-auth-rbac](2026-09-10-spec-010-auth-rbac/PLAN.md) | completed | Реализация SPEC-010: временный internal password login, users и server-side RBAC bundles; independent review и QA approved |
 | [2026-09-10-spec-020-core-domain](2026-09-10-spec-020-core-domain/PLAN.md) | completed | Первая core/outbox vertical: canonical inbound idempotency, migration 4, independent review и remote QA passed |
 | [2026-09-10-spec-020-operator-transitions](2026-09-10-spec-020-operator-transitions/PLAN.md) | completed | Operator status/priority transitions с optimistic locking, normative outbox events, review и remote QA |
+| [2026-09-10-spec-020-channel-acl-http](2026-09-10-spec-020-channel-acl-http/PLAN.md) | planned | Channel membership ACL и HTTP/OpenAPI boundary для operator commands |
