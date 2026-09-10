@@ -79,3 +79,9 @@ Workflow: `.github/workflows/ci.yml`.
 ## Проверки источников
 
 Механизм установки соответствует [Docker Compose plugin installation](https://docs.docker.com/compose/install/linux/). Разделение triggers/environment соответствует [GitHub deployment controls](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments). Credentials передаются через [GitHub Actions secrets](https://docs.github.com/en/actions/concepts/security/secrets).
+
+## Фактическая приёмка 2026-09-10
+
+[CI run 34441730021](https://github.com/NET-BEAR/ohelpdesck/actions/runs/34441730021): verify/deploy-dev success, SHA `62349369d72263d08be2a518d88c4ec97d52d21c`. API live/ready и web `/health` возвращают 200. Отдельная fault injection с API `CMD /bin/false` завершилась ожидаемым exit 1 и автоматическим восстановлением прежних app images, без отката БД. Независимая QA подтвердила current-sha, health, UID и ports после восстановления. Повтор исправного SHA через forced-command key: exit 0, already current and healthy, без rebuild/migrate. Неверный host key: exit 255; запрещённая команда: exit 64. Полное evidence — QA.md.
+
+Первый CI выявил ownership `.env` на Linux runner, браузерный reload — redirect `/health`; оба дефекта исправлены, прошли отдельный review, QA и успешный повтор CI. Существующий mtg сохранил uptime около пяти месяцев; его ранее существовавший статус unhealthy не относится к этой поставке.

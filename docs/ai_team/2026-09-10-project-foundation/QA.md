@@ -1,6 +1,6 @@
 # QA и материалы ПСИ — SPEC-000
 
-Дата: 2026-09-10. Статус: in_qa. Локальная приёмка финального foundation PASS; remote CI/CD gates ещё не завершены.
+Дата: 2026-09-10. Статус: completed. Финальная приёмка SPEC-000 foundation и dev delivery: PASS. Все строки AC-матрицы ниже подтверждены; история промежуточных проверок сохранена.
 
 ## Scope и окружение
 
@@ -25,13 +25,13 @@ PASS требует свежего evidence; pending не является ус�
 
 | Критерий | Метод / ожидаемый результат | Статус |
 |---|---|---|
-| AC-FND-001 / F01 | Bootstrap/full dev final | PASS local make dev; clean hosted checkout pending CI |
+| AC-FND-001 / F01 | Bootstrap/full dev final | PASS Q12 clean hosted checkout и local make dev |
 | AC-FND-002 / F02 | Реальный API live HTTP 200 | PASS Q06 |
 | AC-FND-003 / F02 | ready HTTP 200, postgres/redis/object_storage=ok | PASS Q06 |
 | AC-FND-004 / F03 | Stop PG: live200/ready503, recovery ready200 | PASS Q06 |
 | AC-FND-005 / F04 | Реальные api/worker SIGTERM, exit0 раньше grace period | PASS Q05 |
 | AC-FND-006 / F05 | Empty DB migrations down/status/up/up/status | PASS final integration Q09 |
-| AC-FND-007 / F01 | make verify exit0, integration без skip | PASS local Q09; clean CI pending |
+| AC-FND-007 / F01 | make verify exit0, integration без skip | PASS Q09/Q12 |
 | AC-FND-008 / F06 | Валидный OpenAPI PASS, невалидный FAIL | PASS Q09 |
 | AC-FND-009 / F07 | make generate явно no-op, CI diff api/openapi.yaml | PASS Q09; generation not_applicable |
 | AC-FND-010 / F08 | Secret groups и telemetry privacy regressions | PASS Q09 и независимый re-review R1–R5 |
@@ -40,11 +40,11 @@ PASS требует свежего evidence; pending не является ус�
 | F10 / SEC | Non-root, loopback; CORS/body/timeouts/config | PASS Q08/Q09 |
 | F11 | PG connect/tx rollback, Redis/S3 integration | PASS Q09 |
 | F12 | Telemetry/exporter failure regression | PASS Q09 и re-review |
-| D01 | PR verify; deploy исключён event condition | static PASS; GitHub run pending |
-| D02 | Deploy needs verify, archive HEAD/deploy SHA, health | static PASS; remote pending |
-| D03 | StrictHostKeyChecking/pinned known_hosts/isolated identity | static PASS; SSH negative control pending |
-| D04 | First failure app-only stop; upgrade previous SHA/no DB down | Q01 PASS sandbox; remote rollback pending |
-| D05 | project ohelpdesck-dev, dependencies без host ports | PASS local Q08; remote pending |
+| D01 | PR verify; deploy исключён event condition | PASS Q12, PR condition static |
+| D02 | Deploy needs verify, archive HEAD/deploy SHA, health | PASS Q12/Q13 |
+| D03 | StrictHostKeyChecking/pinned known_hosts/isolated identity | PASS Q14 |
+| D04 | First failure app-only stop; upgrade previous SHA/no DB down | PASS Q01/Q15 |
+| D05 | project ohelpdesck-dev, dependencies без host ports | PASS Q08/Q13 |
 
 CI: bootstrap → make verify → make dev → deploy/smoke.sh; teardown always ограничен ephemeral runner. make verify включает Go tests/integration/coverage gate/vet/race/fmt, frontend checks/build/audit, OpenAPI negative control, delivery tests, govulncheck и generate. Введён механический абсолютный порог >=80% statements и executable-block lines: INFRA-F03 частично закрыт; baseline comparison для будущих PR отсутствует. Проект foundation новый, текущий результат станет baseline; вычисление executable-block ranges не тождественно точному AST diff coverage.
 
@@ -56,11 +56,11 @@ REVIEW_REPORT.md R1–R4 уже переданы разработчику. QA н
 
 Для окончательной приёмки: зафиксировать итоговый SHA и PASS повторного review; полную verify command/exit/coverage; финальный runtime image; health/failure/recovery, реальные SIGTERM, DB catalog, runtime UID и port binds; точный GitHub verify/deploy run и доставленный SHA. Сценарии выполняются на техническом foundation без business-domain таблиц/операций. Реальные remote операции координирует оркестратор во избежание коллизии.
 
-status: in_qa  
+status: completed  
 artifacts: QA.md  
-evidence: Q01–Q04; CI/AC static matrix  
-risks: незавершённые runtime/re-review/CI/remote gates; sandbox не доказывает production behavior  
-recommended_next_role: Оркестратор для GitHub CI/dev delivery, затем QA remote gates
+evidence: Q01–Q16; local runtime, hosted CI, remote SHA/health/rollback/replay  
+risks: приёмка относится к foundation/dev; production hardening и последующие business specs вне scope  
+recommended_next_role: Оркестратор / Архивариус для фиксации завершения
 
 
 ## Финальный локальный ретест
@@ -87,3 +87,26 @@ Q05–Q08 выполнены QA непосредственно. Q09 — свеж
 - **Q11 PASS, exit0**: Python `urllib.request` с `HTTPRedirectHandler.redirect_request → None` открыл `http://127.0.0.1:18080/health`, проверил status200, Content-Type text/html, отсутствие Location. Дополнительно `/health/ready` через web proxy вернул200. Таким образом результат не скрывает redirect follow.
 
 Локальный вердикт для двух исправлений: **PASS**. Полный backend suite повторно не запускался. Исправление изоляции `/src/web/node_modules` для Go tool-container проверяется повторным CI; hosted CI success и удалённый rollout остаются pending.
+
+
+## Hosted CI и dev ПСИ — Q12–Q15
+
+Проверяемая версия: **62349369d72263d08be2a518d88c4ec97d52d21c**. GitHub run: https://github.com/NET-BEAR/ohelpdesck/actions/runs/34441730021 .
+
+- **Q12 PASS**. Независимый `gh run view 34441730021 --json conclusion,headSha,url,jobs`, exit0: conclusion success, exact SHA; jobs verify и deploy-dev success. Clean hosted bootstrap, full verification, build/start, runtime smoke и cleanup прошли. verify completed 2026-09-10T05:40:23Z; deploy-dev completed 05:43:00Z. Закрывает первоначальное падение UID permissions и проверяет обновлённый Go tool-container в реальном CI.
+- **Q13 PASS**. QA read-only `ssh -i ~/.ssh/id_ed25519_masterhost -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 root@vm742476.vps.masterhost.tech ...`, оба вызова exit0. Прочитаны только current-sha/current symlink, health, выбранные Docker ps поля, `id -u`, каталог PostgreSQL. После rollback current-sha и symlink равны проверенному SHA; API/worker/web image tags тоже равны SHA; live/ready200, все checks ok, web `/health`200. UID65532/65532/101. Каталог только public.schema_migrations. API18081/metrics19090/web18080 bound127.0.0.1, зависимости без опубликованных host ports. Existing mtg-vkru: Up5months, 443→3128; уже существующий unhealthy status не является регрессией foundation (предыдущий статус сравнивал оркестратор).
+- **Q14 PASS, evidence оркестратора**. Dedicated deployment identity, `-F /dev/null -o IdentitiesOnly=yes`, команда `id` отвергнута forced receiver с exit64 / Only deploy<sha> accepted. Заведомо неверный ED25519 known_hosts и StrictHostKeyChecking=yes дали exit255 / REMOTE HOST IDENTIFICATION HAS CHANGED до аутентификации. QA самостоятельно SSH boundary не изменял; положительный путь подтверждён успешным CI deploy.
+- **Q15 PASS**. Оркестратор выполнил controlled remote fault injection из отдельного detached worktree, Dockerfile CMD `/bin/false`, artifact ee613ae (не опубликован в рабочую branch). Receiver ожидаемо exit1; QA независимо прочитал `/tmp/ohelpdesck-remote-rollback.log`: строка182 api unhealthy,183 restoring previous application images, database is not rolled back. Затем QA непосредственно подтвердил восстановленную версию и endpoints в Q13. Это реальный rollback runtime, в дополнение к Q01 sandbox; business-data/schema rollback не выполнялся и для foundation не требуется.
+
+Все remote проверки QA были read-only и согласованы после завершения fault injection. Содержимое env/runtime credentials/private keys не читалось; ключ использовался SSH-клиентом. Same-SHA повторная доставка завершена; итог приведён в Q16 ниже.
+
+
+## Финальная передача
+
+**Q16 PASS**: повторная доставка того же source SHA через restricted CI identity завершилась exit0 (результат команды сообщил оркестратор). QA прочитал конец `/tmp/ohelpdesck-remote-replay.log`: healthy checks и `Deployment already current and healthy: 62349369d72263d08be2a518d88c4ec97d52d21c`. По результату оркестратора build/migrate не выполнялись; это согласуется с отдельно проверенным Q01 current-replay control flow.
+
+**status: completed.** AC-FND-001–012 и F/D criteria выполнены в границах SPEC-000 и dev. Блокирующих открытых багов нет; review R1–R5 и последующие infra regressions исправлены, прошли соответствующие ретесты. Подготовлены AC-матрица, команды/exit/evidence и протокол локальной/удалённой ПСИ. Продакшен-код и тесты QA не изменял.
+
+**artifacts:** QA.md. **evidence:** Q01–Q16; hosted CI34441730021, SHA62349369d72263d08be2a518d88c4ec97d52d21c. **recommended_next_role:** Оркестратор / Архивариус — зафиксировать завершение этапа и следующий согласованный spec.
+
+Остаточные риски не блокируют foundation: source rebuilt на dev, а не promotion единственного image digest; будущие PR требуют baseline coverage comparison; schema evolution нуждается в отдельном migration/rollback design; production hardening и бизнес-сценарии SPEC-010+ не принимались. Результаты Q09/Q14/Q16 и выполнение fault injection атрибутированы оркестратору; независимый QA проверил журнал и конечное runtime-состояние, не выдавая чужие команды за свои. Исторические строки pending выше отражают состояние ранних этапов и закрыты Q12–Q16.

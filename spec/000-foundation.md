@@ -1,6 +1,6 @@
 # SPEC-000 Foundation
 
-Status: in_progress  
+Status: done  
 Priority: P0  
 Owner: platform  
 Depends on: none

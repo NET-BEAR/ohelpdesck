@@ -1,6 +1,6 @@
 # Запуск проекта и dev-контура
 
-Статус задачи: in_qa. Дата: 2026-09-10. Владелец: оркестратор.
+Статус задачи: completed. Дата: 2026-09-10. Владелец: оркестратор.
 
 ## Запрос и границы
 
@@ -19,7 +19,7 @@
 - ACCEPTANCE_TESTS.md — критерии до реализации.
 - GPT6_ASTRA_MIGRATION.md — план, без преждевременного добавления AI в foundation.
 - DEV_RUNBOOK.md — эксплуатация и CI/CD.
-- REVIEW.md, QA.md — независимые проверки.
+- REVIEW_REPORT.md, REVIEW_INFRA.md, QA.md — независимые проверки.
 - UX_DESIGN.md — продуктовый UI неприменим к первому инфраструктурному срезу; только служебная health-страница по SPEC-000, без проектирования inbox.
 
 ## Этапы
@@ -60,10 +60,18 @@
 
 ## Итоговая объединённая проверка перед dev
 
-`make verify` на 0715a6e + инфраструктурном рабочем дереве: exit 0. Go 88.60% statements / 87.30% executable block lines (385/441), web 27 tests / 90.90% lines, delivery 8 tests, OpenAPI positive+negative, vet/race, govulncheck 0 reachable и npm audit 0. Независимый reviewer approve R1–R5, clean race count=3 exit 0. Процессная QA и GitHub/remote delivery продолжаются.
+`make verify` на 0715a6e + инфраструктурном рабочем дереве: exit 0. Go 88.60% statements / 87.30% executable block lines (385/441), web 27 tests / 90.90% lines, delivery 8 tests, OpenAPI positive+negative, vet/race, govulncheck 0 reachable и npm audit 0. Независимый reviewer approve R1–R5, clean race count=3 exit 0. Процессная QA и GitHub/remote delivery завершены; финальные результаты ниже.
 
 ## Проверка доставки на чистом runner
 
 Git CLI OAuth не имел workflow scope; GitHub connector успешно опубликовал точный workflow (8d3fe49), без расширения scopes. Первый hosted CI run 34441479440 выявил Linux-only defect: root bootstrap container создал .env0600, недоступный runner user. Исправление — запуск bootstrap под UID/GID вызывающего пользователя и проверка readable, без ослабления прав файла.
 
 При обновлении страницы браузера найден nginx301 `/health`→`:8080/health/`: implicit redirect API-prefix конфликтовал с React route. Добавлен exact location /health и smoke200 прямого URL. Минимальный возврат: infra reviewer → QA этих сценариев → повтор hosted CI; backend/UI логика не меняются.
+
+## Завершение первого среза
+
+SPEC-000 и dev delivery завершены 2026-09-10. Повторный полный `make verify` exit 0; независимые runtime/infra review APPROVE, QA PASS. Hosted [CI run 34441730021](https://github.com/NET-BEAR/ohelpdesck/actions/runs/34441730021) успешно выполнил verify и deploy-dev для `62349369d72263d08be2a518d88c4ec97d52d21c`. [Draft PR #1](https://github.com/NET-BEAR/ohelpdesck/pull/1) подготовлен; main не изменён.
+
+На удалённом dev подтверждены readiness/live/web 200, non-root UID, loopback ports, отсутствие доменных таблиц и изоляция существующего mtg workload. Реальная fault injection с неработающим API дала ожидаемый exit 1 и автоматическое восстановление образов 62349369; current-sha остался прежним, readiness восстановлен. Повтор исходного SHA через restricted credential дал exit 0, `Deployment already current and healthy`, без сборки/миграций. Неправильный host key отвергнут exit 255; произвольная SSH-команда — exit 64. Подробная матрица и provenance — QA.md.
+
+Следующий этап roadmap — SPEC-010 после согласования OIDC issuer/client и bootstrap администратора. Это завершение первого инфраструктурного среза, а не всей helpdesk-платформы. Последующий документационный commit не меняет протестированный runtime; фактически развернутый код — 62349369.
