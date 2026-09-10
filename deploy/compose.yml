@@ -7,6 +7,7 @@ x-app: &app
     dockerfile: deploy/Dockerfile
   environment: &app-env
     ENVIRONMENT: development
+    AUTH_PROVIDER: ${AUTH_PROVIDER:-local_password}
     HTTP_ADDRESS: :8080
     METRICS_ADDRESS: :9090
     DATABASE_URL: postgres://support:${POSTGRES_PASSWORD:?run make bootstrap}@postgres:5432/support?sslmode=disable
@@ -96,6 +97,17 @@ services:
     profiles: [tools]
     entrypoint: [/app/migrate]
     command: [up]
+    restart: "no"
+    depends_on:
+      postgres: {condition: service_healthy}
+  bootstrap-admin:
+    <<: *app
+    profiles: [tools]
+    entrypoint: [/app/bootstrap-admin]
+    environment:
+      <<: *app-env
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-}
     restart: "no"
     depends_on:
       postgres: {condition: service_healthy}

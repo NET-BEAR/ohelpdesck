@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getReadiness } from './api';
+import { getMe, getReadiness, login, logout } from './api';
 
 afterEach(() => vi.unstubAllGlobals());
 describe('readiness client', () => {
@@ -47,5 +47,26 @@ describe('readiness client', () => {
   it('normalizes malformed JSON', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html>bad gateway</html>')));
     await expect(getReadiness()).rejects.toThrow('Некорректный ответ API');
+  });
+});
+
+describe('local-password session client', () => {
+  it('keeps csrf only in memory and sends credentials with login/logout', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ csrf_token: 'x'.repeat(43) })))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetcher);
+    await login('sysadmin', 'correct horse battery staple');
+    await logout();
+    expect(fetcher).toHaveBeenNthCalledWith(1, '/api/v1/auth/login', expect.objectContaining({ method: 'POST', credentials: 'same-origin' }));
+    expect(fetcher).toHaveBeenNthCalledWith(2, '/api/v1/auth/logout', expect.objectContaining({ headers: { 'X-CSRF-Token': 'x'.repeat(43) } }));
+  });
+  it('normalizes invalid login and validates profile shape', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: 'unauthenticated' } }), { status: 401 })));
+    await expect(login('sysadmin', 'wrong')).rejects.toThrow('Не удалось выполнить вход');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'id', login: 'sysadmin', email: 'x@example.test', name: 'System', role: 'administrator', status: 'active', permissions: ['user.manage'] }))));
+    await expect(getMe()).resolves.toMatchObject({ login: 'sysadmin' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'id' }))));
+    await expect(getMe()).rejects.toThrow('Сессия недоступна');
   });
 });

@@ -7,7 +7,8 @@ COPY internal ./internal
 COPY db ./db
 RUN CGO_ENABLED=0 go build -trimpath -o /out/api ./cmd/api && \
     CGO_ENABLED=0 go build -trimpath -o /out/worker ./cmd/worker && \
-    CGO_ENABLED=0 go build -trimpath -o /out/migrate ./cmd/migrate
+    CGO_ENABLED=0 go build -trimpath -o /out/migrate ./cmd/migrate && \
+    CGO_ENABLED=0 go build -trimpath -o /out/bootstrap-admin ./cmd/bootstrap-admin
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*

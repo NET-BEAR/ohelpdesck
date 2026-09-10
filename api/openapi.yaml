@@ -33,7 +33,162 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Readiness'}
+  /api/v1/auth/login:
+    post:
+      operationId: localPasswordLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LoginRequest'}
+      responses:
+        '200':
+          description: Server session created; response also sets an HttpOnly cookie.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LoginResponse'}
+        '401': {description: Invalid credentials or disabled user, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '429': {description: Login rate limit reached, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/auth/logout:
+    post:
+      operationId: logout
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      responses:
+        '204': {description: Session revoked}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/me:
+    get:
+      operationId: getMe
+      responses:
+        '200':
+          description: Effective authenticated profile
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/users:
+    get:
+      operationId: listUsers
+      responses:
+        '200':
+          description: Users
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/User'}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing user.manage, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    post:
+      operationId: createUser
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateUserRequest'}
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '400': {description: Validation error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing user.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '409': {description: Login or email already exists, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/users/{id}:
+    patch:
+      operationId: updateUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateUserRequest'}
+      responses:
+        '200':
+          description: User updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '400': {description: Validation error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing user.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: User not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '409': {description: Last administrator or uniqueness constraint, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/users/{id}/permission-bundles:
+    put:
+      operationId: setUserPermissionBundles
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [bundle_ids]
+              properties:
+                bundle_ids: {type: array, items: {type: string, format: uuid}, uniqueItems: true}
+      responses:
+        '204': {description: Assignments replaced}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing role.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: User or bundle not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/permission-bundles:
+    get:
+      operationId: listPermissionBundles
+      responses:
+        '200':
+          description: Permission bundles
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/PermissionBundle'}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing role.manage, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    post:
+      operationId: createPermissionBundle
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreatePermissionBundleRequest'}
+      responses:
+        '201':
+          description: Bundle created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PermissionBundle'}
+        '400': {description: Validation error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing role.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '409': {description: Bundle name already exists, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
 components:
+  parameters:
+    CSRFToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema: {type: string, minLength: 32}
   schemas:
     Readiness:
       type: object
@@ -60,3 +215,72 @@ components:
             message: {type: string}
             details: {type: object, additionalProperties: {type: string}}
             request_id: {type: string}
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [login, password]
+      properties:
+        login: {type: string, minLength: 1, maxLength: 255}
+        password: {type: string, minLength: 1, maxLength: 1024, writeOnly: true}
+    LoginResponse:
+      type: object
+      additionalProperties: false
+      required: [csrf_token]
+      properties:
+        csrf_token: {type: string, minLength: 32}
+    Role:
+      type: string
+      enum: [agent, supervisor, administrator]
+    UserStatus:
+      type: string
+      enum: [active, disabled]
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, login, email, name, role, status]
+      properties:
+        id: {type: string, format: uuid}
+        login: {type: string}
+        email: {type: string}
+        name: {type: string}
+        role: {$ref: '#/components/schemas/Role'}
+        status: {$ref: '#/components/schemas/UserStatus'}
+        permissions:
+          type: array
+          items: {type: string}
+          uniqueItems: true
+    CreateUserRequest:
+      type: object
+      additionalProperties: false
+      required: [login, email, name, password, role]
+      properties:
+        login: {type: string, minLength: 1, maxLength: 255}
+        email: {type: string, minLength: 1, maxLength: 320}
+        name: {type: string, minLength: 1, maxLength: 255}
+        password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}
+        role: {$ref: '#/components/schemas/Role'}
+    UpdateUserRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        email: {type: string, minLength: 1, maxLength: 320}
+        name: {type: string, minLength: 1, maxLength: 255}
+        password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}
+        role: {$ref: '#/components/schemas/Role'}
+        status: {$ref: '#/components/schemas/UserStatus'}
+    PermissionBundle:
+      type: object
+      additionalProperties: false
+      required: [id, name, permissions]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        permissions: {type: array, items: {type: string}, uniqueItems: true}
+    CreatePermissionBundleRequest:
+      type: object
+      additionalProperties: false
+      required: [name, permissions]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 255}
+        permissions: {type: array, items: {type: string}, uniqueItems: true}

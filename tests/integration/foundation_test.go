@@ -40,8 +40,12 @@ func TestFoundation(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		if (d == "up" || d == "status" && v != 0) && v != 1 {
-			t.Fatal(v)
+		want := 2
+		if d == "status" && v == 1 { // status directly after one safe rollback
+			want = 1
+		}
+		if (d == "up" || d == "status" && v != 0) && v != want {
+			t.Fatalf("migration %s: got %d want %d", d, v, want)
 		}
 	}
 	if _, e = p.Migrate(ctx, "invalid"); e == nil {

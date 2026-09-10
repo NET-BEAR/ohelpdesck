@@ -1,6 +1,6 @@
 # SPEC-010 Authentication, Users and RBAC
 
-Status: ready  
+Status: in_progress  
 Priority: P0  
 Owner: identity/platform  
 Depends on: SPEC-000
@@ -10,6 +10,23 @@ Depends on: SPEC-000
 Implement secure authentication, local user records and explicit role-based authorization for internal support operators.
 
 The production design is OIDC-first and compatible with a corporate identity provider. Development/test environments may use a local identity provider.
+
+### 1.1 Amendment: temporary internal provider (2026-09-10)
+
+Until the corporate Keycloak is available, the first deployable slice uses
+`AUTH_PROVIDER=local_password`: pre-provisioned internal users authenticate by
+unique login and password. Passwords are persisted only as Argon2id hashes;
+the browser receives a server-side opaque HttpOnly session and a CSRF token
+kept only in memory. Public registration, password recovery and passwordless
+links remain excluded.
+
+This amendment supersedes OIDC callback/invitation implementation only for the
+current slice. The `Authenticator` boundary, local user record and server-side
+permission evaluation remain the migration path to a future Keycloak adapter.
+The local provider must be explicit in production configuration; an unknown
+provider fails startup. The initial `sysadmin` is created only by the separate
+operator bootstrap command, whose initial password is a runtime secret and is
+never an API value, source file or documentation value.
 
 ## 2. Non-goals
 

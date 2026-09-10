@@ -30,6 +30,12 @@ func Error(w http.ResponseWriter, r *http.Request, status int, code, message str
 	_ = json.NewEncoder(w).Encode(map[string]any{"error": errorBody{code, message, map[string]string{}, w.Header().Get("X-Request-ID")}})
 }
 func New(checks map[string]Check, origins string, metrics *telemetry.Metrics, loggers ...*slog.Logger) http.Handler {
+	return NewApplication(checks, origins, metrics, nil, loggers...)
+}
+
+// NewApplication mounts the authenticated API behind the existing platform
+// boundary while keeping public health endpoints independent of auth.
+func NewApplication(checks map[string]Check, origins string, metrics *telemetry.Metrics, application http.Handler, loggers ...*slog.Logger) http.Handler {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		status := 200
@@ -84,6 +90,10 @@ func New(checks map[string]Check, origins string, metrics *telemetry.Metrics, lo
 			}
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		if application != nil && strings.HasPrefix(r.URL.Path, "/api/v1/") {
+			application.ServeHTTP(w, r)
+			return
+		}
 		if _, e := io.Copy(io.Discard, r.Body); e != nil {
 			status = 413
 			Error(w, r, status, "body_too_large", "Request body exceeds limit")
