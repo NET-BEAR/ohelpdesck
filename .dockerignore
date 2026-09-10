@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+.DS_Store
+.artifacts
+**/node_modules
+web/dist
+docs
+spec
+*.tar.gz

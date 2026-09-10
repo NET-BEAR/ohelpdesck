@@ -30,3 +30,12 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+.DS_Store
+.env.*
+!.env.example
+node_modules/
+web/dist/
+bin/
+.artifacts/
+*.tar.gz
