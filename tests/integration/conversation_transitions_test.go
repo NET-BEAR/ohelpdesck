@@ -77,10 +77,13 @@ func conversationSnapshot(t *testing.T, ctx context.Context, pool *database.Pool
 }
 
 func TestConversationStatusTransitionMatrix(t *testing.T) {
-	cases := []struct{ from, to core.ConversationStatus }{
-		{core.ConversationOpen, core.ConversationPending}, {core.ConversationOpen, core.ConversationResolved}, {core.ConversationOpen, core.ConversationSnoozed},
-		{core.ConversationPending, core.ConversationOpen}, {core.ConversationPending, core.ConversationResolved}, {core.ConversationPending, core.ConversationSnoozed},
-		{core.ConversationSnoozed, core.ConversationOpen}, {core.ConversationSnoozed, core.ConversationResolved}, {core.ConversationResolved, core.ConversationOpen},
+	cases := []struct {
+		from, to core.ConversationStatus
+		event    string
+	}{
+		{core.ConversationOpen, core.ConversationPending, "conversation.pending"}, {core.ConversationOpen, core.ConversationResolved, "conversation.resolved"}, {core.ConversationOpen, core.ConversationSnoozed, "conversation.snoozed"},
+		{core.ConversationPending, core.ConversationOpen, "conversation.opened"}, {core.ConversationPending, core.ConversationResolved, "conversation.resolved"}, {core.ConversationPending, core.ConversationSnoozed, "conversation.snoozed"},
+		{core.ConversationSnoozed, core.ConversationOpen, "conversation.reopened"}, {core.ConversationSnoozed, core.ConversationResolved, "conversation.resolved"}, {core.ConversationResolved, core.ConversationOpen, "conversation.reopened"},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.from)+"_to_"+string(tc.to), func(t *testing.T) {
@@ -102,6 +105,9 @@ func TestConversationStatusTransitionMatrix(t *testing.T) {
 			after, afterEvents := conversationSnapshot(t, ctx, pool, fixture.ConversationID)
 			if after.Status != tc.to || after.Version != before.Version+1 || afterEvents != beforeEvents+1 {
 				t.Fatalf("after=%+v events=%d beforeEvents=%d", after, afterEvents, beforeEvents)
+			}
+			if eventType := latestConversationEventType(t, ctx, pool, fixture.ConversationID); eventType != tc.event {
+				t.Fatalf("event_type=%q want %q", eventType, tc.event)
 			}
 			if tc.to == core.ConversationResolved && after.ResolvedAt == nil {
 				t.Fatal("resolved_at missing")
@@ -151,7 +157,7 @@ func TestConversationResolveUsesDBTimeAndEmitsNewVersion(t *testing.T) {
 		t.Fatalf("resolved_at=%v outside database clock interval [%v,%v]", got.ResolvedAt, lower, upper)
 	}
 	var eventVersion int64
-	if err := pool.QueryRow(ctx, `SELECT (payload->>'version')::bigint FROM outbox_events WHERE aggregate_id=$1 AND event_type='conversation.status_changed' ORDER BY created_at DESC LIMIT 1`, fixture.ConversationID).Scan(&eventVersion); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT (payload->>'version')::bigint FROM outbox_events WHERE aggregate_id=$1 AND event_type='conversation.resolved' ORDER BY created_at DESC LIMIT 1`, fixture.ConversationID).Scan(&eventVersion); err != nil {
 		t.Fatal(err)
 	}
 	if got.Version != before.Version+1 || eventVersion != got.Version {
@@ -274,6 +280,15 @@ func TestConversationTransitionConcurrentCommandsUseExpectedVersion(t *testing.T
 	if after.Version != before.Version+1 || afterEvents != events+1 {
 		t.Fatalf("concurrent mutation result=%+v events=%d", after, afterEvents)
 	}
+}
+
+func latestConversationEventType(t *testing.T, ctx context.Context, pool *database.Pool, conversationID uuid.UUID) string {
+	t.Helper()
+	var eventType string
+	if err := pool.QueryRow(ctx, `SELECT event_type FROM outbox_events WHERE aggregate_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1`, conversationID).Scan(&eventType); err != nil {
+		t.Fatal(err)
+	}
+	return eventType
 }
 
 func ptrTime(value time.Time) *time.Time { return &value }

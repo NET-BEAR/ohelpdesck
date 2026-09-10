@@ -111,7 +111,7 @@ func (s *ConversationService) ChangeStatus(ctx context.Context, command ChangeCo
 		if _, err := tx.Exec(ctx, `UPDATE conversations SET status=$2,resolved_at=$3,snoozed_until=$4,version=$5,updated_at=$6 WHERE id=$1`, result.ID, result.Status, result.ResolvedAt, result.SnoozedUntil, result.Version, mutationTime); err != nil {
 			return fmt.Errorf("conversation status update: %w", err)
 		}
-		return s.outbox.Append(ctx, tx, outbox.Event{ID: uuid.New(), AggregateID: result.ID, AggregateType: "conversation", Type: "conversation.status_changed", CorrelationID: correlationID(command.CorrelationID), OccurredAt: mutationTime, Payload: map[string]any{"conversation_id": result.ID, "channel_id": result.ChannelID, "previous_status": current.Status, "status": result.Status, "version": result.Version, "occurred_at": mutationTime}})
+		return s.outbox.Append(ctx, tx, outbox.Event{ID: uuid.New(), AggregateID: result.ID, AggregateType: "conversation", Type: statusEventType(current.Status, result.Status), CorrelationID: correlationID(command.CorrelationID), OccurredAt: mutationTime, Payload: map[string]any{"conversation_id": result.ID, "channel_id": result.ChannelID, "previous_status": current.Status, "status": result.Status, "version": result.Version, "occurred_at": mutationTime}})
 	})
 	return result, err
 }
@@ -156,6 +156,26 @@ func loadConversationForUpdate(ctx context.Context, tx pgx.Tx, id uuid.UUID) (Co
 		return Conversation{}, fmt.Errorf("conversation lookup: %w", err)
 	}
 	return conversation, nil
+}
+
+func statusEventType(from, to ConversationStatus) string {
+	switch to {
+	case ConversationPending:
+		return "conversation.pending"
+	case ConversationSnoozed:
+		return "conversation.snoozed"
+	case ConversationResolved:
+		return "conversation.resolved"
+	case ConversationOpen:
+		if from == ConversationResolved || from == ConversationSnoozed {
+			return "conversation.reopened"
+		}
+		// SPEC-020 lists conversation.opened as the documented event for entering
+		// open. Reopened is reserved for leaving resolved or snoozed.
+		return "conversation.opened"
+	default:
+		return ""
+	}
 }
 
 func validStatusTransition(from, to ConversationStatus) bool {
