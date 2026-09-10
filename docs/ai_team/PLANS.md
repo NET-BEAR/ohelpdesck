@@ -4,4 +4,4 @@
 |---|---|---|
 | [2026-09-10-project-foundation](2026-09-10-project-foundation/PLAN.md) | completed | Анализ SPEC-000..030, начало foundation, удалённый dev CI/CD, план GPT-6 Astra |
 | [2026-09-10-spec-010-auth-rbac](2026-09-10-spec-010-auth-rbac/PLAN.md) | completed | Реализация SPEC-010: временный internal password login, users и server-side RBAC bundles; independent review и QA approved |
-| [2026-09-10-spec-020-core-domain](2026-09-10-spec-020-core-domain/PLAN.md) | in_design | Core domain + minimum transactional outbox: product decisions approved, architecture in progress |
+| [2026-09-10-spec-020-core-domain](2026-09-10-spec-020-core-domain/PLAN.md) | in_implementation | Core domain + minimum transactional outbox: decisions, architecture and acceptance approved; RED implementation starts |

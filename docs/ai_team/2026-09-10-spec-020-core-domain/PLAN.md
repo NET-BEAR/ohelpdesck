@@ -1,6 +1,6 @@
 # SPEC-020: Core domain и transactional outbox
 
-Статус задачи: `in_design`. Дата: 2026-09-10. Владелец: оркестратор.
+Статус задачи: `in_implementation`. Дата: 2026-09-10. Владелец: оркестратор.
 
 ## Цель
 
@@ -24,3 +24,7 @@
 1. Архитектор готовит `ARCHITECTURE.md`: lock order, transaction ownership, migration/constraint design и minimum PostgreSQL outbox.
 2. БА/QA формируют полный `ACCEPTANCE_TESTS.md` до кода.
 3. Разработчик создаёт RED tests, затем минимальную реализацию, проходит review и QA.
+
+## Готовность к реализации
+
+`ARCHITECTURE.md` и `ACCEPTANCE_TESTS.md` готовы. Роль Разработчик начинает с RED integration tests с двумя PostgreSQL connections и failpoints; API/UI-сценарии, явно отложенные первым вертикальным срезом, не публикуются без отдельного contract task.
