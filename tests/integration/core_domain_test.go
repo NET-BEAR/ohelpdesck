@@ -288,3 +288,45 @@ func TestReceiveInboundRollsBackWhenOutboxAppendFails(t *testing.T) {
 		t.Fatalf("partial durable state messages=%d identities=%d conversations=%d events=%d", messages, identities, conversations, events)
 	}
 }
+
+func TestReceiveInboundRejectsInvalidNormalizedMessage(t *testing.T) {
+	result, err := core.NewReceiveInboundService(nil).ReceiveInbound(context.Background(), core.NormalizedInboundMessage{})
+	if err != core.ErrInvalidInbound || result != (core.ReceiveResult{}) {
+		t.Fatalf("result=%+v error=%v", result, err)
+	}
+}
+
+func TestReceiveInboundRejectsInconsistentCanonicalMessagePath(t *testing.T) {
+	requireCoreDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := database.Open(ctx, os.Getenv("DATABASE_URL"), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if _, err := pool.Migrate(ctx, "up"); err != nil {
+		t.Fatal(err)
+	}
+	channelID, otherChannelID := uuid.New(), uuid.New()
+	for _, id := range []uuid.UUID{channelID, otherChannelID} {
+		if _, err := pool.Exec(ctx, `INSERT INTO channels(id,type,name,status,enabled) VALUES($1,'email','Core consistency','active',true)`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer cleanupCoreChannel(t, pool, channelID)
+	defer cleanupCoreChannel(t, pool, otherChannelID)
+	input := core.NormalizedInboundMessage{ChannelID: channelID, ExternalMessageID: "message-" + uuid.NewString(), ExternalThreadID: "thread-" + uuid.NewString(), Sender: core.ExternalSender{ExternalUserID: "customer-" + uuid.NewString()}, Text: "consistency", ContentType: core.ContentText}
+	service := core.NewReceiveInboundService(pool)
+	first, err := service.ReceiveInbound(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE conversations SET channel_id=$2 WHERE id=$1`, first.ConversationID, otherChannelID); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = pool.Exec(context.Background(), `UPDATE conversations SET channel_id=$2 WHERE id=$1`, first.ConversationID, channelID) }()
+	if _, err := service.ReceiveInbound(ctx, input); err == nil || err.Error() != "canonical message channel mismatch" {
+		t.Fatalf("error=%v", err)
+	}
+}
