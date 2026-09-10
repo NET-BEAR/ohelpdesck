@@ -110,6 +110,20 @@ func TestLocalPasswordLoginAndAuthorization(t *testing.T) {
 	if badCSRFResponse.Code != http.StatusForbidden {
 		t.Fatalf("mutation without csrf accepted: %d", badCSRFResponse.Code)
 	}
+	for attempt := 0; attempt < 5; attempt++ {
+		if response := login(name+"-rate-target", "wrong password"); response.Code != http.StatusUnauthorized {
+			t.Fatalf("rate limit pre-threshold status: %d", response.Code)
+		}
+	}
+	if response := login(name+"-rate-target", "wrong password"); response.Code != http.StatusTooManyRequests {
+		t.Fatalf("rate limit threshold status: %d", response.Code)
+	}
+	if rateLimited := testutil.ToFloat64(metrics.AuthFailures.WithLabelValues("rate_limited")); rateLimited != 1 {
+		t.Fatalf("rate limit metric: %f", rateLimited)
+	}
+	if response := login(agent.Login, "correct horse battery staple"); response.Code != http.StatusOK {
+		t.Fatalf("rate limiter affected a different login: %d", response.Code)
+	}
 }
 
 func TestAdministrationBundlesAndSessionFailures(t *testing.T) {
@@ -202,6 +216,30 @@ func TestAdministrationBundlesAndSessionFailures(t *testing.T) {
 	}
 	if response := request(http.MethodPost, "/api/v1/users", fmt.Sprintf(`{"login":%q,"email":%q,"name":"Operator","password":"correct horse battery staple","role":"agent"}`, prefix+"-agent", prefix+"+agent@example.test"), cookie, session.CSRFToken); response.Code != http.StatusConflict {
 		t.Fatalf("duplicate user: %d", response.Code)
+	}
+	concurrentBody := fmt.Sprintf(`{"login":%q,"email":%q,"name":"Concurrent","password":"correct horse battery staple","role":"agent"}`, prefix+"-concurrent", prefix+"+concurrent@example.test")
+	concurrent := make(chan int, 2)
+	var createWait sync.WaitGroup
+	for range 2 {
+		createWait.Add(1)
+		go func() {
+			defer createWait.Done()
+			concurrent <- request(http.MethodPost, "/api/v1/users", concurrentBody, cookie, session.CSRFToken).Code
+		}()
+	}
+	createWait.Wait()
+	close(concurrent)
+	created, conflicted := 0, 0
+	for status := range concurrent {
+		if status == http.StatusCreated {
+			created++
+		}
+		if status == http.StatusConflict {
+			conflicted++
+		}
+	}
+	if created != 1 || conflicted != 1 {
+		t.Fatalf("concurrent duplicate create statuses: created=%d conflict=%d", created, conflicted)
 	}
 	if response := request(http.MethodPost, "/api/v1/users", `{}`, cookie, session.CSRFToken); response.Code != http.StatusBadRequest {
 		t.Fatalf("invalid user accepted: %d", response.Code)

@@ -1,6 +1,6 @@
 # Реализация SPEC-010: Authentication, Users, RBAC
 
-Статус задачи: `in_qa`. Дата: 2026-09-10. Владелец: оркестратор.
+Статус задачи: `in_review`. Дата: 2026-09-10. Владелец: оркестратор.
 
 ## Цель и границы
 
@@ -59,6 +59,10 @@
 4. Добавлены bounded-label Prometheus counters `auth_requests_total`, `auth_failures_total`, `authorization_denied_total`, `user_admin_changes_total` и structured security events. События не содержат login, password, cookie или CSRF.
 
 Повторный review выявил два P2 в этом rework: success-audit должен выполняться только после успешной repository mutation, а concurrent test не может предполагать пустую persistent dev DB. Исправлено: вызов `userAdminChange` перемещён после полной обработки ошибок; capture test доказывает, что last-admin refusal не увеличивает counter. Concurrent test фиксирует исходное глобальное число active administrators, вычисляет допустимое число successful disable и подтверждает глобальный инвариант `active administrators >= 1`. `go test -count=3 ./tests/integration` и selected race tests прошли с exit 0. Далее обязательны полный verify, повторный независимый review и QA.
+
+### QA rework: закрытие coverage P2
+
+QA обнаружил отсутствующие acceptance-сценарии. Добавлены два deterministic HTTP integration tests: два одновременных `POST /api/v1/users` с одинаковыми login/email (ровно один `201`, один `409`), а также пять `401` и шестой `429` для одного login с успешным входом другого login и проверкой `auth_failures_total{reason="rate_limited"}`. Трёхкратный integration run прошёл. Изменение возвращается на narrow review и QA retest.
 
 ## Артефакты
 
