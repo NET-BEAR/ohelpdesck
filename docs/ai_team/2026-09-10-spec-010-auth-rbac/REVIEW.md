@@ -89,3 +89,23 @@ SPEC требует `auth_requests_total`, `auth_failures_total`, `authorization
 `needs_changes`.
 
 Первоначальные P1 закрыты реализацией, но до перехода к QA нужно исправить два P2: truthful security audit/metric и state-independent concurrent integration test. После этого повторить full `make verify`, независимый review и QA.
+
+---
+
+## Финальный narrow review P2 rework `fd1063c` (2026-09-10)
+
+Проверены исключительно два замечания предыдущего review и полученный финальный evidence.
+
+- **Truthful user-admin audit — исправлено.** `userAdminChange("create", ...)` вызывается только после общей проверки `err == nil` ([http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:93)); update event аналогично вызывается после обработки `ErrNotFound`, `ErrForbidden`, `ErrConflict` и общей error branch ([http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:175)). Capture assertion фиксирует counter до отказа last-admin и доказывает отсутствие инкремента после `409` ([auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:239)).
+- **State-independent concurrent test — исправлено.** Тест получает фактическое исходное глобальное число active administrators после создания своих двух пользователей ([auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:283)), выводит допустимое количество successful disable и проверяет итоговый глобальный инвариант `active administrators >= 1` ([auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:313)). Он больше не предполагает пустую persistent dev DB.
+
+Независимо выполнено последовательно, без пересечения migration tests в общей БД:
+
+- `make verify` — exit 0: Go coverage 84.19% statements и 81.00% executable block lines; 30 frontend tests; OpenAPI positive и negative control; delivery tests; `go vet`; race; `govulncheck` сообщил 0 reachable vulnerabilities; npm audit 0;
+- `docker compose --env-file .env -f deploy/compose.yml run --rm go go test -count=3 ./tests/integration` — exit 0.
+
+## Финальный verdict
+
+`approve`.
+
+В проверенном P2 scope не осталось блокирующих security или correctness замечаний. Ограничение остаётся архитектурным и уже зафиксированным: in-memory per-process rate limiter не является distributed limit; для текущего одного API process это не отменяет защиту, а масштабирование API требует отдельного Redis-backed/durable policy в будущем этапе.
