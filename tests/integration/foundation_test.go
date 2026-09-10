@@ -40,7 +40,7 @@ func TestFoundation(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		want := 2
+		want := 3
 		if d == "status" && v == 1 { // status directly after one safe rollback
 			want = 1
 		}
