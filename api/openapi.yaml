@@ -201,7 +201,7 @@ paths:
         '200': {description: Conversation status updated, content: {application/json: {schema: {$ref: '#/components/schemas/Conversation'}}}}
         '400': {description: "Invalid JSON, enum, expected_version or snooze deadline", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
-        '403': {description: Invalid CSRF, missing conversation.reply or Channel can_reply membership, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: "Invalid CSRF, missing conversation.reply or Channel can_reply membership", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '409': {description: Stale expected_version or invalid state transition, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   /api/v1/conversations/{id}/priority:
@@ -223,7 +223,7 @@ paths:
         '200': {description: Conversation priority updated, content: {application/json: {schema: {$ref: '#/components/schemas/Conversation'}}}}
         '400': {description: "Invalid JSON, enum or expected_version", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
-        '403': {description: Invalid CSRF, missing conversation.reply or Channel can_reply membership, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: "Invalid CSRF, missing conversation.reply or Channel can_reply membership", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '409': {description: Stale expected_version, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
 components:
