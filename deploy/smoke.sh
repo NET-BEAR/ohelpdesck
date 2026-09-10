@@ -4,6 +4,7 @@ compose=(docker compose --env-file "${ENV_FILE:-.env}" -f deploy/compose.yml)
 curl --fail --silent --show-error --max-time 10 http://127.0.0.1:18081/health/live
 curl --fail --silent --show-error --max-time 10 http://127.0.0.1:18080/health/ready
 curl --fail --silent --show-error --max-time 10 http://127.0.0.1:18080/ >/dev/null
+test "$(curl --max-time 10 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/health)" = 200
 test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/metrics)" = 404
 trap '"${compose[@]}" start postgres >/dev/null' EXIT
 "${compose[@]}" stop postgres

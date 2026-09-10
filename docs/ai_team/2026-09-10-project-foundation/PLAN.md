@@ -61,3 +61,9 @@
 ## Итоговая объединённая проверка перед dev
 
 `make verify` на 0715a6e + инфраструктурном рабочем дереве: exit 0. Go 88.60% statements / 87.30% executable block lines (385/441), web 27 tests / 90.90% lines, delivery 8 tests, OpenAPI positive+negative, vet/race, govulncheck 0 reachable и npm audit 0. Независимый reviewer approve R1–R5, clean race count=3 exit 0. Процессная QA и GitHub/remote delivery продолжаются.
+
+## Проверка доставки на чистом runner
+
+Git CLI OAuth не имел workflow scope; GitHub connector успешно опубликовал точный workflow (8d3fe49), без расширения scopes. Первый hosted CI run 34441479440 выявил Linux-only defect: root bootstrap container создал .env0600, недоступный runner user. Исправление — запуск bootstrap под UID/GID вызывающего пользователя и проверка readable, без ослабления прав файла.
+
+При обновлении страницы браузера найден nginx301 `/health`→`:8080/health/`: implicit redirect API-prefix конфликтовал с React route. Добавлен exact location /health и smoke200 прямого URL. Минимальный возврат: infra reviewer → QA этих сценариев → повтор hosted CI; backend/UI логика не меняются.

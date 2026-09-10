@@ -68,3 +68,31 @@ SHA-256 локального содержимого, не Git commit:
 - `deploy/compose.yml`: `2daa9c61aa6202aac17c225215473da219c71eed35a728793a6fba8b4b0e6ff6`
 - `Makefile`: `2a6b3c7340ea99683765058630b19e4104ce5113beafaf410491af282865f5c3`
 - `.github/workflows/ci.yml`: `b304fca95c53f85bfd1b6e608d55ca989f020578bf857e6e553692a207741a0e`
+
+## Повторный review после clean CI и browser QA
+
+Статус: **approved по исходному коду для указанного reroute**, runtime GREEN должен подтвердить QA. Основание повторной проверки: оркестратор сообщил о реальном CI run `34441479440` с permission denied при чтении root-owned `.env` 0600 и browser-ошибке redirect `/health` на внутренний порт 8080. Эти внешние evidence переданы оркестратором; ревьювер самостоятельно CI/browser здесь не запускал.
+
+Scope: изменения `Makefile`, `deploy/nginx.conf`, `deploy/smoke.sh`, а также изоляция npm dependencies в Go tooling service `deploy/compose.yml`. Backend suites и production-файлы ревьювер не запускал/не изменял.
+
+| Изменение | Вывод независимого review | Требуемое QA |
+|---|---|---|
+| Bootstrap `--user "$$(id -u):$$(id -g)"` и `test -r "$(ENV_FILE)"` | Исправляет первопричину на Linux runner: создатель 0600 файла теперь тот же UID, который запускает последующие Compose commands. Читаемость проверяется сразу. Secret не печатается, permissive chmod не вводится | Clean checkout на GitHub-hosted runner: bootstrap + следующий Compose шаг проходят; file owner соответствует runner, mode 0600. Старый чужой root-owned файл намеренно не исправляется молча |
+| Nginx `location = /health { try_files /index.html =404; }` | Exact location предшествует prefix `/health/`; SPA route получает index, infrastructure `/health/live` и `/health/ready` сохраняют proxy path. Не требуется redirect на port 8080 | Rebuilt nginx: direct GET `/health` = 200 без Location, `/health/ready` остаётся JSON backend; browser reload route работает |
+| Smoke direct `/health` status assertion | Проверяет именно 200 без `-L`, поэтому неожиданный 301 не превращается в ложный GREEN; bounded curl | Smoke на rebuilt stack и отдельная browser QA |
+| Go service anonymous `/src/web/node_modules` volume | Скрывает frontend dependency tree от `go test ./...`/`-coverpkg=./...` внутри tooling container. Не удаляет host npm files и не затрагивает web build. Empty directory из Go image перекрывает вложенный путь bind-mounted checkout | Повторить Go coverage/race при установленном frontend node_modules; npm packages с Go fixtures не входят в список покрываемых application packages |
+
+Новых P0/P1/P2 дефектов в этом узком diff не обнаружено. Изоляция node_modules не является исключением production Go packages из coverage — она исключает сторонний frontend dependency tree.
+
+Проверки reroute: `bash -n deploy/smoke.sh` — exit0; `docker compose --env-file /dev/null -f deploy/compose.yml config --quiet` с synthetic placeholders — exit0; `make -n bootstrap ENV_FILE=/tmp/review-placeholder-config` — exit0, shell UID/GID substitutions и проверка readable сохранены в recipe. Dry-run не создавал конфигурацию и не читал `.env`.
+
+Уточнение ранее записанного INFRA-F03: текущий Makefile уже вызывает `deploy/check_coverage.py`, который отвергает пустой отчёт и минимум statement/executable-block line coverage ниже 80%. Старое утверждение «Makefile не проверяет порог» superseded; полная корректность метрики/покрытие изменённых строк остаётся предметом общего backend review/QA, вне этого reroute.
+
+recommended_next_role: QA — подтвердить clean CI permissions, nginx direct route/browser reload и coverage isolation на реальных запусках. Approval этого раздела не заменяет runtime evidence и не меняет общий task status.
+
+Снимок повторно проверенных файлов (SHA-256):
+
+- `Makefile`: `91f27be760c3759af9f90bd08f37457f02a689dd2aea73f05b79bbfb237b3b1a`
+- `deploy/nginx.conf`: `ba5049ce0dda696515e639ea0626bab2f14e0711803080cc24a266f3b8ea8750`
+- `deploy/smoke.sh`: `8d354d093a157431229001278915acb8dfb592fd3cbdf19e666be93cb311d982`
+- `deploy/compose.yml`: `c2188948056fda0ca7a18a2a779596ce7e25c05b65ecc79037cb991aa1261ab1`

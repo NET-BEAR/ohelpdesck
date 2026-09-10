@@ -6,7 +6,8 @@ NODE = docker run --rm -v "$(CURDIR)/web:/app" -v ohelpdesck-npm-cache:/root/.np
 
 .PHONY: bootstrap dev stop api worker web test test-unit test-integration test-race lint fmt-check migrate-up migrate-down migrate-status generate openapi-check test-web test-delivery build verify
 bootstrap:
-	docker run --rm -e ENV_FILE=$(ENV_FILE) -v "$(CURDIR):/src" -w /src python:3.12.12-slim python deploy/bootstrap.py
+	docker run --rm --user "$$(id -u):$$(id -g)" -e ENV_FILE=$(ENV_FILE) -v "$(CURDIR):/src" -w /src python:3.12.12-slim python deploy/bootstrap.py
+	test -r "$(ENV_FILE)"
 	$(NODE) npm ci
 dev:
 	$(COMPOSE) build api worker web
