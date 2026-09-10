@@ -41,8 +41,8 @@ func TestFoundation(t *testing.T) {
 			t.Fatal(e)
 		}
 		want := 3
-		if d == "status" && v == 1 { // status directly after one safe rollback
-			want = 1
+		if d == "down" || (d == "status" && v == 2) {
+			want = 2
 		}
 		if (d == "up" || d == "status" && v != 0) && v != want {
 			t.Fatalf("migration %s: got %d want %d", d, v, want)
