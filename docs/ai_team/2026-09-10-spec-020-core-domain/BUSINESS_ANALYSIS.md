@@ -31,7 +31,7 @@ flowchart LR
 | Участник | Нужный outcome | Граница ответственности |
 |---|---|---|
 | Клиент | Его новое сообщение не теряется и не остаётся скрытым после snooze/resolve | Нормализация provider data предшествует core |
-| Агент | Видит корректный lifecycle waiting/first response и может ответить без дублирования retry | Видимость и assignment должны быть утверждены отдельно |
+| Агент | Видит корректный lifecycle waiting/first response и может подхватить ответ коллеги | Любой agent с разрешением на Channel имеет доступ; assignment не является ACL |
 | Supervisor | Меняет status/priority/assignee в пределах RBAC | Queues/routing — SPEC-100 |
 | Administrator | Настраивает Channels вне provider credentials в обычных DTO | Управление реальными credentials остаётся adapter/config layer |
 | Система/worker | Может асинхронно потребить committed event после рестарта | Exactly-once внешней отправки не обещается |
@@ -110,7 +110,7 @@ flowchart LR
 
 ## Открытые вопросы для оркестратора и пользователя
 
-Это решения, а не препятствия для чистых domain contracts/schema. До публикации operator endpoints и начала production implementation необходимо утвердить DEC-020-01..04 из [RND.md](RND.md): visibility/assignment policy, resolve-inbound concurrency, authoritative waiting clock и corrective behavior `sent→failed`.
+Решения DEC-020-01..04 утверждены пользователем и зафиксированы в [DECISIONS.md](DECISIONS.md): командная Channel-level visibility без assignee ACL, `expected_version` для resolve, московское server/DB time для SLA timestamps и conditionally corrective `sent→failed`.
 
 Дополнительно архитектура должна выбрать единственный lock order: ContactIdentity → Conversation → Message/operational rows. Для отсутствующей Conversation блокировка самой таблицы не защищает creation race; serializing row должен быть уже существующий identity или application-level advisory lock с доказательным PostgreSQL test.
 

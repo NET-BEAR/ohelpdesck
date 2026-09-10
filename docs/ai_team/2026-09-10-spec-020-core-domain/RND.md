@@ -1,6 +1,6 @@
 # Исследование SPEC-020 и зависимого SPEC-030
 
-Статус: `ready_for_review`.  
+Статус: `approved`.  
 Дата: 2026-09-10. Владелец: Бизнес-аналитик.  
 Граница: анализ `spec/020-core-domain.md`, необходимой части `spec/030-events-jobs-outbox.md`, текущего кода и утверждённых task artifacts. Production-код, миграции и `PLANS.md` не изменялись.
 
@@ -65,14 +65,14 @@ Core остаётся provider-neutral. Он не импортирует Telegra
 | BA-020-06 | Две transaction одновременно получают inbound для одного identity/thread, а оператор пытается resolve | Transactions получают locks и переоценивают состояние | identity не дублируется; конечный status соответствует согласованному below rule, conversation version атомарно возрастает |
 | BA-020-07 | Domain mutation успешно коммитится, но dispatcher/worker остановлен | Проверяется БД | Undispatched outbox event сохранён и может быть обработан позднее; не заявляется exactly-once external delivery |
 
-## Открытые решения, нужные до production реализации
+## Утверждённые решения перед реализацией
 
 | ID | Варианты | Последствия | Рекомендация |
 |---|---|---|---|
-| DEC-020-01: resource policy до queues | A: agent видит/меняет только assigned conversations; B: доступен любой conversation в allowed channel; C: доступ ко всем | A безопаснее, но нужна первичная assignment semantics; B требует Channel ACL, которых spec пока не задаёт; C делает RBAC слишком широким | **A**, с явной temporary policy в architecture/acceptance: supervisor/admin могут назначать, agent получает read/reply только на assigned. Если assignment пока не входит в vertical, команды operator не публиковать |
-| DEC-020-02: resolve vs inbound race | A: last serialized command wins; B: operator resolve требует expected version и получает conflict при inbound; C: inbound всегда побеждает специальным приоритетом | A способен оставить новый inbound resolved; C усложняет общий lock semantics; B прозрачен для UI и сохраняет доказуемость | **B**: optimistic `expected_version` для operator resolve, inbound после lock всегда делает conversation open |
-| DEC-020-03: clock и coverage human reply | A: provider timestamps; B: DB/server commit time; C: комбинированное правило | A неуниформен и допускает недоверенные/опоздавшие часы; C сложнее тестировать | **B** для waiting/first response: server event ordering; provider time хранить отдельно как descriptive `external_created_at` |
-| DEC-020-04: `sent → failed` после нового inbound | A: не корректировать waiting; B: восстановить только если current episode всё ещё covered этим Message; C: всегда восстановить | A искажает SLA, C может стереть начало нового episode | **B**: хранить/сравнивать episode boundary; при definitive failure emitted correction event. До этого переход разрешать только при явно подтверждённой provider семантике |
+| DEC-020-01: resource policy до queues | A: agent видит/меняет только assigned conversations; B: доступен любой conversation в allowed channel; C: доступ ко всем | A безопаснее, но нужна первичная assignment semantics; B требует Channel ACL, которых spec пока не задаёт; C делает RBAC слишком широким | **Утверждён B с Channel ACL:** assignment не является ACL; команда видит и подхватывает диалоги, а единый account сохраняет персональную подпись в теле email |
+| DEC-020-02: resolve vs inbound race | A: last serialized command wins; B: operator resolve требует expected version и получает conflict при inbound; C: inbound всегда побеждает специальным приоритетом | A способен оставить новый inbound resolved; C усложняет общий lock semantics; B прозрачен для UI и сохраняет доказуемость | **Утверждён B** |
+| DEC-020-03: clock и coverage human reply | A: provider timestamps; B: DB/server commit time; C: комбинированное правило | A неуниформен и допускает недоверенные/опоздавшие часы; C сложнее тестировать | **Утверждён B:** timezone-aware storage, API/UI `Europe/Moscow` |
+| DEC-020-04: `sent → failed` после нового inbound | A: не корректировать waiting; B: восстановить только если current episode всё ещё covered этим Message; C: всегда восстановить | A искажает SLA, C может стереть начало нового episode | **Утверждён B** |
 | DEC-020-05: unread ordering | A: `(created_at,id)`; B: per-conversation ordinal; C: только timestamp | C противоречит spec; A проще, но late commit edge case остаётся; B даёт строгий курсор, добавляет schema/locking | **A** в MVP с явным documented late-commit behaviour и regression test; перейти к B, если операторский UI требует strict read-after-write |
 | DEC-020-06: minimum outbox scope | A: fake/no-op runtime writer; B: minimal real `outbox_events`; C: весь SPEC-030 first | A нарушает atomicity; C откладывает core ценность на worker scope | **B**, затем общий core/outbox integration gate и полный SPEC-030 |
 

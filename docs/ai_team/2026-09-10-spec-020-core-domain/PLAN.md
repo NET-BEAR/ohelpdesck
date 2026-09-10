@@ -1,6 +1,6 @@
 # SPEC-020: Core domain и transactional outbox
 
-Статус задачи: `awaiting_user`. Дата: 2026-09-10. Владелец: оркестратор.
+Статус задачи: `in_design`. Дата: 2026-09-10. Владелец: оркестратор.
 
 ## Цель
 
@@ -10,16 +10,16 @@
 
 Бизнес-анализ прочитал SPEC-020 и необходимую зависимость SPEC-030, сверил их с текущим checkout и подготовил [RND.md](RND.md) и [BUSINESS_ANALYSIS.md](BUSINESS_ANALYSIS.md). Подтверждено отсутствие core migrations/modules/outbox; временный no-op outbox для runtime неприемлем.
 
-## Открытые решения пользователя
+## Принятые решения пользователя
 
-Полные варианты и последствия приведены в DEC-020-01..04 [RND.md](RND.md). Они меняют операторское поведение, конкуренцию и SLA-семантику, поэтому не выбираются молча:
+Полные варианты и последствия приведены в DEC-020-01..04 [RND.md](RND.md); утверждённый контракт записан в [DECISIONS.md](DECISIONS.md):
 
-1. Visibility/assignment: рекомендуется до появления queues разрешать agent read/reply только для назначенных Conversation, supervisor/admin — назначать; альтернативы — доступ по Channel ACL или доступ ко всем.
+1. Visibility/assignment: assignment не закрывает Conversation. Любой agent с доступом к Channel видит и отвечает; подпись конкретного агента включается в тело email, при общем Channel account.
 2. Гонка resolve и нового inbound: рекомендуется требовать `expected_version` для operator resolve, а inbound после lock всегда открывает Conversation; альтернативы — last-command-wins или специальный приоритет inbound.
 3. Authoritative clock waiting/first response: рекомендуется DB/server commit time; альтернативы — provider time или комбинированное правило.
 4. Поздняя provider correction `sent → failed`: рекомендуется восстанавливать waiting только если текущий episode всё ещё покрыт этим Message; альтернативы — никогда или всегда восстанавливать.
 
-## Следующие шаги после решения
+## Следующие шаги
 
 1. Архитектор готовит `ARCHITECTURE.md`: lock order, transaction ownership, migration/constraint design и minimum PostgreSQL outbox.
 2. БА/QA формируют полный `ACCEPTANCE_TESTS.md` до кода.
