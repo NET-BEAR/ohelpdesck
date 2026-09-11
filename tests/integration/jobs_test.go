@@ -589,3 +589,131 @@ func TestJobsWorkerRunPollsUntilCancellation(t *testing.T) {
 		t.Fatalf("run status=%s err=%v", status, err)
 	}
 }
+
+type permanentHandler struct{ calls atomic.Int32 }
+
+func (h *permanentHandler) Handle(context.Context, pgx.Tx, jobs.DomainEvent) error {
+	h.calls.Add(1)
+	return &jobs.JobError{Class: jobs.Permanent, Code: "rejected", Message: "recipient rejected"}
+}
+
+type longRetryHandler struct {
+	calls atomic.Int32
+	delay time.Duration
+}
+
+func (h *longRetryHandler) Handle(context.Context, pgx.Tx, jobs.DomainEvent) error {
+	h.calls.Add(1)
+	return &jobs.JobError{Class: jobs.Transient, Code: "upstream_timeout", Message: "upstream timeout", RetryAfter: &h.delay}
+}
+
+func TestJobsReceiptRollsBackHandlerFailureAndPreservesRetryability(t *testing.T) {
+	ctx, pool := jobsFixture(t)
+	repo := jobs.NewRepository(pool)
+	event := jobEvent(t, ctx, pool, "jobs.receipt.rollback")
+	id := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO jobs(id,type,handler,event_id) VALUES($1,'domain_event','receipt.rollback',$2)`, id, event); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := repo.Claim(ctx, "receipt-rollback", time.Minute)
+	if err != nil || lease == nil {
+		t.Fatalf("claim=%+v err=%v", lease, err)
+	}
+	if applied, err := repo.RunReceipt(ctx, *lease, failingReceiptHandler{err: errors.New("database effect rejected")}); err == nil || applied {
+		t.Fatalf("failed receipt applied=%v err=%v", applied, err)
+	}
+	var receipts int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM event_handler_receipts WHERE event_id=$1 AND handler='receipt.rollback'`, event).Scan(&receipts); err != nil || receipts != 0 {
+		t.Fatalf("rolled back receipts=%d err=%v", receipts, err)
+	}
+	ok := &receiptHandler{}
+	if applied, err := repo.RunReceipt(ctx, *lease, ok); err != nil || !applied || ok.calls.Load() != 1 {
+		t.Fatalf("retried receipt applied=%v calls=%d err=%v", applied, ok.calls.Load(), err)
+	}
+	if err := repo.Complete(ctx, *lease); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestJobsWorkerPermanentAndCappedRetryPolicies(t *testing.T) {
+	ctx, pool := jobsFixture(t)
+	repo := jobs.NewRepository(pool)
+
+	permanentEvent := jobEvent(t, ctx, pool, "jobs.worker.permanent")
+	permanent := &permanentHandler{}
+	permanentRegistry := registry(t, permanent, "jobs.worker.permanent", "worker.permanent")
+	permanentWorker, err := jobs.NewWorker(jobs.NewDispatcher(pool, permanentRegistry), repo, permanentRegistry, jobs.WorkerConfig{
+		WorkerID: "worker-permanent-policy", PollInterval: time.Millisecond, LeaseDuration: time.Minute, DispatchBatch: 10, RecoveryBatch: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = permanentWorker.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var status jobs.Status
+	var code string
+	if err = pool.QueryRow(ctx, `SELECT status,last_error_code FROM jobs WHERE event_id=$1 AND handler='worker.permanent'`, permanentEvent).Scan(&status, &code); err != nil || status != jobs.Dead || code != "rejected" || permanent.calls.Load() != 1 {
+		t.Fatalf("permanent status=%s code=%s calls=%d err=%v", status, code, permanent.calls.Load(), err)
+	}
+
+	retryEvent := jobEvent(t, ctx, pool, "jobs.worker.capped-retry")
+	longRetry := &longRetryHandler{delay: 2 * time.Minute}
+	retryRegistry := registry(t, longRetry, "jobs.worker.capped-retry", "worker.capped-retry")
+	retryWorker, err := jobs.NewWorker(jobs.NewDispatcher(pool, retryRegistry), repo, retryRegistry, jobs.WorkerConfig{
+		WorkerID: "worker-capped-retry", PollInterval: time.Millisecond, LeaseDuration: time.Minute, DispatchBatch: 10, RecoveryBatch: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now().UTC().Add(55 * time.Second)
+	if err = retryWorker.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var runAt time.Time
+	if err = pool.QueryRow(ctx, `SELECT status,run_at FROM jobs WHERE event_id=$1 AND handler='worker.capped-retry'`, retryEvent).Scan(&status, &runAt); err != nil || status != jobs.Pending || runAt.Before(before) || longRetry.calls.Load() != 1 {
+		t.Fatalf("retry status=%s runAt=%s calls=%d err=%v", status, runAt, longRetry.calls.Load(), err)
+	}
+}
+
+type exponentialRetryHandler struct{ calls atomic.Int32 }
+
+func (h *exponentialRetryHandler) Handle(context.Context, pgx.Tx, jobs.DomainEvent) error {
+	h.calls.Add(1)
+	return &jobs.JobError{Class: jobs.Transient, Code: "transient", Message: "retry with exponential backoff"}
+}
+
+func TestJobsWorkerCapsExponentialBackoffAtOneMinute(t *testing.T) {
+	ctx, pool := jobsFixture(t)
+	event := jobEvent(t, ctx, pool, "jobs.worker.exponential-retry")
+	h := &exponentialRetryHandler{}
+	r := registry(t, h, "jobs.worker.exponential-retry", "worker.exponential-retry")
+	worker, err := jobs.NewWorker(jobs.NewDispatcher(pool, r), jobs.NewRepository(pool), r, jobs.WorkerConfig{
+		WorkerID: "worker-exponential-retry", PollInterval: time.Millisecond, LeaseDuration: time.Minute, DispatchBatch: 10, RecoveryBatch: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE outbox_events SET occurred_at=clock_timestamp()-interval '1 minute' WHERE id=$1`, event); err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var jobID uuid.UUID
+	if err = pool.QueryRow(ctx, `SELECT id FROM jobs WHERE event_id=$1 AND handler='worker.exponential-retry'`, event).Scan(&jobID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE jobs SET status='pending',attempts=6,run_at=clock_timestamp(),locked_by=NULL,locked_at=NULL,lease_expires_at=NULL,lease_token=NULL WHERE id=$1`, jobID); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now().UTC().Add(55 * time.Second)
+	if err = worker.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var status jobs.Status
+	var runAt time.Time
+	if err = pool.QueryRow(ctx, `SELECT status,run_at FROM jobs WHERE id=$1`, jobID).Scan(&status, &runAt); err != nil || status != jobs.Pending || runAt.Before(before) || h.calls.Load() != 2 {
+		t.Fatalf("status=%s runAt=%s calls=%d err=%v", status, runAt, h.calls.Load(), err)
+	}
+}
