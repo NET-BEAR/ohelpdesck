@@ -81,6 +81,12 @@ type Handler interface {
 	Handle(context.Context, pgx.Tx, DomainEvent) error
 }
 
+// PostCommitHandler is for effects which must never run while the durable
+// receipt transaction is open (for example a network session supervisor).
+type PostCommitHandler interface {
+	AfterCommit(context.Context, DomainEvent) error
+}
+
 type Registry struct {
 	routes   map[string][]Route
 	handlers map[string]Handler
@@ -305,6 +311,15 @@ func (r *Repository) RunReceipt(ctx context.Context, lease Lease, handler Handle
 	return applied, err
 }
 
+func (r *Repository) Event(ctx context.Context, id uuid.UUID) (DomainEvent, error) {
+	var event DomainEvent
+	err := r.db.QueryRow(ctx, `SELECT id,event_type,payload,correlation_id,causation_id,occurred_at FROM outbox_events WHERE id=$1`, id).Scan(&event.ID, &event.Type, &event.Payload, &event.CorrelationID, &event.CausationID, &event.OccurredAt)
+	if err != nil {
+		return DomainEvent{}, fmt.Errorf("load event: %w", err)
+	}
+	return event, nil
+}
+
 type WorkerConfig struct {
 	WorkerID                     string
 	PollInterval, LeaseDuration  time.Duration
@@ -365,6 +380,16 @@ func (w *Worker) handle(ctx context.Context, lease Lease) error {
 		return w.repository.Reschedule(ctx, lease, &JobError{Class: Permanent, Code: "unknown_handler", Message: "registered handler unavailable"}, 0)
 	}
 	_, err := w.repository.RunReceipt(ctx, lease, handler)
+	if err == nil {
+		if post, ok := handler.(PostCommitHandler); ok {
+			event, loadErr := w.repository.Event(ctx, *lease.Job.EventID)
+			if loadErr != nil {
+				err = loadErr
+			} else {
+				err = post.AfterCommit(ctx, event)
+			}
+		}
+	}
 	if err == nil {
 		return w.repository.Complete(ctx, lease)
 	}

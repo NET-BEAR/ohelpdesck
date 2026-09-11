@@ -220,6 +220,25 @@ type failingReceiptHandler struct{ err error }
 
 func (h failingReceiptHandler) Handle(context.Context, pgx.Tx, jobs.DomainEvent) error { return h.err }
 
+type postCommitReceiptHandler struct {
+	calls      atomic.Int32
+	afterCalls atomic.Int32
+	afterErr   error
+}
+
+func (h *postCommitReceiptHandler) Handle(context.Context, pgx.Tx, jobs.DomainEvent) error {
+	h.calls.Add(1)
+	return nil
+}
+
+func (h *postCommitReceiptHandler) AfterCommit(_ context.Context, event jobs.DomainEvent) error {
+	if event.ID == uuid.Nil {
+		return errors.New("missing event")
+	}
+	h.afterCalls.Add(1)
+	return h.afterErr
+}
+
 func TestJobsRepositoryLeaseOperationsAndFailurePolicies(t *testing.T) {
 	ctx, pool := jobsFixture(t)
 	repo := jobs.NewRepository(pool)
@@ -357,6 +376,80 @@ func TestJobsWorkerUnknownHandlerAndLifecycleValidation(t *testing.T) {
 	go func() { done <- worker.Run(cancelled) }()
 	if err = <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestJobsWorkerPostCommitEffectAndFailureRetry(t *testing.T) {
+	ctx, pool := jobsFixture(t)
+	repo := jobs.NewRepository(pool)
+
+	successEvent := jobEvent(t, ctx, pool, "jobs.postcommit.success")
+	success := &postCommitReceiptHandler{}
+	successRegistry := registry(t, success, "jobs.postcommit.success", "postcommit.success")
+	successWorker, err := jobs.NewWorker(jobs.NewDispatcher(pool, successRegistry), repo, successRegistry, jobs.WorkerConfig{
+		WorkerID: "worker-postcommit-success", PollInterval: time.Millisecond, LeaseDuration: time.Minute, DispatchBatch: 10, RecoveryBatch: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = successWorker.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if success.calls.Load() != 1 || success.afterCalls.Load() != 1 {
+		t.Fatalf("handler=%d after=%d", success.calls.Load(), success.afterCalls.Load())
+	}
+	loaded, err := repo.Event(ctx, successEvent)
+	if err != nil || loaded.ID != successEvent || loaded.Type != "jobs.postcommit.success" {
+		t.Fatalf("loaded event=%+v err=%v", loaded, err)
+	}
+	var status jobs.Status
+	if err = pool.QueryRow(ctx, `SELECT status FROM jobs WHERE event_id=$1 AND handler='postcommit.success'`, successEvent).Scan(&status); err != nil || status != jobs.Completed {
+		t.Fatalf("success status=%s err=%v", status, err)
+	}
+
+	failureEvent := jobEvent(t, ctx, pool, "jobs.postcommit.failure")
+	failure := &postCommitReceiptHandler{afterErr: errors.New("session unavailable")}
+	failureRegistry := registry(t, failure, "jobs.postcommit.failure", "postcommit.failure")
+	failureWorker, err := jobs.NewWorker(jobs.NewDispatcher(pool, failureRegistry), repo, failureRegistry, jobs.WorkerConfig{
+		WorkerID: "worker-postcommit-failure", PollInterval: time.Millisecond, LeaseDuration: time.Minute, DispatchBatch: 10, RecoveryBatch: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = failureWorker.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if failure.calls.Load() != 1 || failure.afterCalls.Load() != 1 {
+		t.Fatalf("failed handler=%d after=%d", failure.calls.Load(), failure.afterCalls.Load())
+	}
+	var code string
+	if err = pool.QueryRow(ctx, `SELECT status,last_error_code FROM jobs WHERE event_id=$1 AND handler='postcommit.failure'`, failureEvent).Scan(&status, &code); err != nil || status != jobs.Pending || code != "internal_error" {
+		t.Fatalf("failure status=%s code=%s err=%v", status, code, err)
+	}
+}
+
+func TestJobsRepositoryEventNotFoundAndRecoverMultipleExpired(t *testing.T) {
+	ctx, pool := jobsFixture(t)
+	repo := jobs.NewRepository(pool)
+	if _, err := repo.Event(ctx, uuid.New()); err == nil {
+		t.Fatal("missing event loaded")
+	}
+
+	for _, priority := range []int{20, 10} {
+		id := insertJob(t, ctx, pool, priority)
+		lease, err := repo.Claim(ctx, "expired-worker", time.Minute)
+		if err != nil || lease == nil || lease.Job.ID != id {
+			t.Fatalf("lease=%+v err=%v id=%s", lease, err, id)
+		}
+		if _, err = pool.Exec(ctx, `UPDATE jobs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if recovered, err := repo.RecoverExpired(ctx, 1); err != nil || recovered != 1 {
+		t.Fatalf("first recovery=%d err=%v", recovered, err)
+	}
+	if recovered, err := repo.RecoverExpired(ctx, 10); err != nil || recovered != 1 {
+		t.Fatalf("second recovery=%d err=%v", recovered, err)
 	}
 }
 
