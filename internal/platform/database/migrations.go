@@ -14,7 +14,7 @@ type migration struct {
 	name    string
 }
 
-var migrations = []migration{{1, "foundation"}, {2, "auth_users_rbac"}, {3, "core_outbox"}, {4, "remove_core_channel_triggers"}, {5, "outbound_idempotency"}, {6, "channel_adapters"}, {7, "channel_credentials_audit"}, {8, "channel_config_version"}}
+var migrations = []migration{{1, "foundation"}, {2, "auth_users_rbac"}, {3, "core_outbox"}, {4, "remove_core_channel_triggers"}, {5, "outbound_idempotency"}, {6, "channel_adapters"}, {7, "channel_credentials_audit"}, {8, "channel_config_version"}, {9, "durable_jobs"}}
 
 // Migrate applies ordered, checksummed migrations. A mismatched source is a
 // deployment error, not a reason to silently rewrite an already applied schema.

@@ -40,8 +40,8 @@ func TestFoundation(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		want := 8
-		if d == "down" || (d == "status" && v == 7) {
+		want := 9
+		if d == "down" || (d == "status" && v == 8) {
 			want = 7
 		}
 		if (d == "up" || d == "status" && v != 0) && v != want {
@@ -50,10 +50,10 @@ func TestFoundation(t *testing.T) {
 	}
 	if _, e = p.Migrate(ctx, "down"); e != nil {
 		t.Fatal(e)
-	} // rollback v8
+	} // rollback v9
 	if _, e = p.Migrate(ctx, "down"); e != nil {
 		t.Fatal(e)
-	} // rollback v7
+	} // rollback v8
 	if _, e = p.Migrate(ctx, "down"); e == nil {
 		t.Fatal("irreversible enum migration v6 rolled back")
 	}

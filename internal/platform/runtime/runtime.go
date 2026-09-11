@@ -8,6 +8,7 @@ import (
 	"github.com/NET-BEAR/ohelpdesck/internal/channels"
 	"github.com/NET-BEAR/ohelpdesck/internal/channels/telegrambot"
 	"github.com/NET-BEAR/ohelpdesck/internal/core"
+	"github.com/NET-BEAR/ohelpdesck/internal/jobs"
 	"github.com/NET-BEAR/ohelpdesck/internal/platform/config"
 	"github.com/NET-BEAR/ohelpdesck/internal/platform/database"
 	"github.com/NET-BEAR/ohelpdesck/internal/platform/httpserver"
@@ -60,6 +61,18 @@ func Run(ctx context.Context, worker bool) error {
 	}
 	metrics := telemetry.NewMetrics(func() float64 { return float64(db.Stat().AcquiredConns()) }, func() float64 { return float64(db.Stat().IdleConns()) })
 	servers := []*http.Server{{Addr: c.MetricsAddress, Handler: metrics.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: c.ReadTimeout, WriteTimeout: c.WriteTimeout, IdleTimeout: c.IdleTimeout}}
+	var workerLoop *jobs.Worker
+	if worker {
+		host, hostErr := os.Hostname()
+		if hostErr != nil {
+			host = "worker"
+		}
+		registry := jobs.NewRegistry()
+		workerLoop, e = jobs.NewWorker(jobs.NewDispatcher(db, registry), jobs.NewRepository(db), registry, jobs.WorkerConfig{WorkerID: fmt.Sprintf("%s:%d", host, os.Getpid()), PollInterval: time.Second, LeaseDuration: time.Minute, DispatchBatch: 32, RecoveryBatch: 32})
+		if e != nil {
+			return e
+		}
+	}
 	if !worker {
 		repository := auth.NewRepository(db)
 		credentialCipher, err := channels.NewKeyring(c.ChannelCredentialsKeyID, c.ChannelCredentialsKey, c.ChannelCredentialsPreviousKeys)
@@ -78,7 +91,10 @@ func Run(ctx context.Context, worker bool) error {
 		servers = append(servers, &http.Server{Addr: c.HTTPAddress, Handler: httpserver.NewApplication(map[string]httpserver.Check{"postgres": db.Ping, "redis": cache.Health, "object_storage": store.Health}, c.CORSOrigins, metrics, mux, log), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: c.ReadTimeout, WriteTimeout: c.WriteTimeout, IdleTimeout: c.IdleTimeout})
 	}
 	log.Info("starting")
-	errs := make(chan error, len(servers))
+	errs := make(chan error, len(servers)+1)
+	if workerLoop != nil {
+		go func() { errs <- workerLoop.Run(ctx) }()
+	}
 	for _, s := range servers {
 		go func(s *http.Server) { errs <- s.ListenAndServe() }(s)
 	}
