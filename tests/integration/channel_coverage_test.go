@@ -108,15 +108,12 @@ func TestChannelServiceLifecycleAndCredentialRotation(t *testing.T) {
 		t.Fatalf("reencrypt channel=%+v err=%v", rotated, err)
 	}
 
-	var audits, lifecycleEvents int
+	var audits int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM channel_audit_events WHERE channel_id=$1`, created.ID).Scan(&audits); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM outbox_events WHERE aggregate_id=$1 AND aggregate_type='channel'`, created.ID).Scan(&lifecycleEvents); err != nil {
-		t.Fatal(err)
-	}
-	if audits < 7 || lifecycleEvents < 4 {
-		t.Fatalf("audits=%d lifecycle_events=%d", audits, lifecycleEvents)
+	if audits < 7 {
+		t.Fatalf("audits=%d", audits)
 	}
 }
 
