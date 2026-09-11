@@ -168,7 +168,7 @@ func (d *Dispatcher) DispatchBatch(ctx context.Context, limit int) (result Dispa
 				continue
 			}
 			for _, route := range routes {
-				tag, e := tx.Exec(ctx, `INSERT INTO jobs(id,type,handler,payload,event_id,correlation_id,causation_id) VALUES($1,'domain_event',$2,jsonb_build_object('event_id',$3::text),$3,$4,$5) ON CONFLICT (event_id,handler) WHERE event_id IS NOT NULL DO NOTHING`, uuid.New(), route.Handler, event.id, event.correlation, event.causation)
+				tag, e := tx.Exec(ctx, `INSERT INTO jobs(id,type,handler,payload,event_id,correlation_id,causation_id) VALUES($1,'domain_event',$2,jsonb_build_object('event_id',$3::text),$4,$5,$6) ON CONFLICT (event_id,handler) WHERE event_id IS NOT NULL DO NOTHING`, uuid.New(), route.Handler, event.id, event.id, event.correlation, event.causation)
 				if e != nil {
 					return fmt.Errorf("insert job: %w", e)
 				}
@@ -238,7 +238,7 @@ func (r *Repository) Reschedule(ctx context.Context, lease Lease, failure *JobEr
 		status = Dead
 		delay = 0
 	}
-	sql := `UPDATE jobs SET status=$4,run_at=CASE WHEN $4='pending' THEN clock_timestamp()+$5::interval ELSE run_at END,last_error_code=$6,last_error_message=$7,updated_at=clock_timestamp(),locked_by=NULL,locked_at=NULL,lease_expires_at=NULL,lease_token=NULL WHERE id=$1 AND status='running' AND locked_by=$2 AND lease_token=$3`
+	sql := `UPDATE jobs SET status=$4::job_status,run_at=CASE WHEN $4::job_status='pending'::job_status THEN clock_timestamp()+$5::interval ELSE run_at END,last_error_code=$6,last_error_message=$7,updated_at=clock_timestamp(),locked_by=NULL,locked_at=NULL,lease_expires_at=NULL,lease_token=NULL WHERE id=$1 AND status='running' AND locked_by=$2 AND lease_token=$3`
 	tag, e := r.db.Exec(ctx, sql, lease.Job.ID, lease.WorkerID, lease.Token, status, delay.String(), code, msg)
 	if e != nil {
 		return fmt.Errorf("reschedule job: %w", e)
