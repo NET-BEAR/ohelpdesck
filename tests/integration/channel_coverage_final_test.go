@@ -26,6 +26,14 @@ func TestChannelCryptoAndRegistryFailClosedAtTrustBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, input := range []struct {
+		keyID string
+		key   []byte
+	}{{keyID: "", key: key}, {keyID: "short", key: key[:31]}} {
+		if _, err := channels.NewAESGCMCipherWithKeyID(input.keyID, input.key); err == nil {
+			t.Fatalf("invalid cipher setup accepted key_id=%q len=%d", input.keyID, len(input.key))
+		}
+	}
 	sealed, metadata, err := cipher.Seal("11111111-1111-1111-1111-111111111111", channels.TypeTelegramBot, []byte(`{"token":"final-secret"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -38,6 +46,9 @@ func TestChannelCryptoAndRegistryFailClosedAtTrustBoundaries(t *testing.T) {
 		if _, err := cipher.Open("11111111-1111-1111-1111-111111111111", channels.TypeTelegramBot, candidate, sealed); err == nil {
 			t.Fatalf("mismatched metadata accepted: %+v", candidate)
 		}
+	}
+	if _, err := cipher.Open("other-channel", channels.TypeTelegramBot, metadata, sealed); err == nil {
+		t.Fatal("ciphertext opened under a different channel AAD")
 	}
 	var nilCipher *channels.AESGCMCipher
 	if _, _, err := nilCipher.Seal("channel", channels.TypeEmail, []byte(`{}`)); err == nil {
