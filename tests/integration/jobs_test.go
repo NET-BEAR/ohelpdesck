@@ -727,3 +727,41 @@ func TestJobsWorkerCapsExponentialBackoffAtOneMinute(t *testing.T) {
 		t.Fatalf("status=%s runAt=%s calls=%d err=%v", status, runAt, h.calls.Load(), err)
 	}
 }
+
+func TestJobsSanitizesBlankFailureAndLeaseExtensionFencing(t *testing.T) {
+	var nilError *jobs.JobError
+	if got := nilError.Error(); got != "" {
+		t.Fatalf("nil JobError text=%q", got)
+	}
+	if got := (&jobs.JobError{Message: "descriptive"}).Error(); got != "descriptive" {
+		t.Fatalf("JobError text=%q", got)
+	}
+
+	ctx, pool := jobsFixture(t)
+	repo := jobs.NewRepository(pool)
+	id := insertJob(t, ctx, pool, 1)
+	lease, err := repo.Claim(ctx, "sanitization-worker", time.Minute)
+	if err != nil || lease == nil || lease.Job.ID != id {
+		t.Fatalf("claim=%+v err=%v", lease, err)
+	}
+	if err = repo.Reschedule(ctx, *lease, &jobs.JobError{}, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	var code, message string
+	if err = pool.QueryRow(ctx, `SELECT last_error_code,last_error_message FROM jobs WHERE id=$1`, id).Scan(&code, &message); err != nil || code != "internal_error" || message != "job failed" {
+		t.Fatalf("sanitized code=%q message=%q err=%v", code, message, err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE jobs SET run_at=clock_timestamp()-interval '1 second' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := repo.Claim(ctx, "fresh-worker", time.Minute)
+	if err != nil || fresh == nil {
+		t.Fatalf("fresh claim=%+v err=%v", fresh, err)
+	}
+	if err = repo.Extend(ctx, *lease, time.Minute); !errors.Is(err, jobs.ErrStaleJobLease) {
+		t.Fatalf("stale extend=%v", err)
+	}
+	if err = repo.Complete(ctx, *fresh); err != nil {
+		t.Fatal(err)
+	}
+}
