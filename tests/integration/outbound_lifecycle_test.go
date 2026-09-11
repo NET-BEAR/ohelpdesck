@@ -474,3 +474,51 @@ func TestOutboundTransitionZeroIDAndFailedOutboxRollback(t *testing.T) {
 		t.Fatalf("sent correction rollback status=%s waiting=%v closed_by=%v", status, waiting, closedBy)
 	}
 }
+
+func TestOutboundSentFailedDoesNotRestoreWhenAnotherReplyClosedEpisode(t *testing.T) {
+	ctx, pool, _, inbound, userID := outboundFixture(t)
+	service := core.NewOutboundService(pool)
+
+	first, err := service.QueueOutbound(ctx, core.QueueOutboundCommand{
+		ConversationID: inbound.ConversationID,
+		ActorID:        userID,
+		Text:           "first successful reply",
+		IdempotencyKey: "first-close-" + uuid.NewString(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.MarkSent(ctx, core.MarkMessageSentCommand{MessageID: first.ID}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.QueueOutbound(ctx, core.QueueOutboundCommand{
+		ConversationID: inbound.ConversationID,
+		ActorID:        userID,
+		Text:           "later unsuccessful reply",
+		IdempotencyKey: "second-correction-" + uuid.NewString(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.MarkSent(ctx, core.MarkMessageSentCommand{MessageID: second.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.MarkFailed(ctx, core.MarkMessageFailedCommand{
+		MessageID:    second.ID,
+		ErrorCode:    "provider_correction",
+		ErrorMessage: "not accepted",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var waiting *time.Time
+	var closedBy *uuid.UUID
+	var status core.MessageStatus
+	var restored bool
+	if err := pool.QueryRow(ctx, `SELECT c.waiting_since,c.waiting_closed_by_message_id,m.status,(SELECT (payload->>'waiting_restored')::boolean FROM outbox_events WHERE aggregate_id=m.id ORDER BY created_at DESC LIMIT 1) FROM conversations c JOIN messages m ON m.id=$2 WHERE c.id=$1`, inbound.ConversationID, second.ID).Scan(&waiting, &closedBy, &status, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if waiting != nil || closedBy == nil || *closedBy != first.ID || status != core.MessageFailed || restored {
+		t.Fatalf("waiting=%v closed_by=%v first=%s status=%s restored=%v", waiting, closedBy, first.ID, status, restored)
+	}
+}
