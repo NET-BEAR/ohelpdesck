@@ -574,8 +574,18 @@ func TestJobsWorkerRunPollsUntilCancellation(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- worker.Run(runCtx) }()
 	deadline := time.Now().Add(time.Second)
-	for h.calls.Load() == 0 && time.Now().Before(deadline) {
+	var status jobs.Status
+	for time.Now().Before(deadline) {
+		if err = pool.QueryRow(ctx, `SELECT status FROM jobs WHERE event_id=$1 AND handler='run.handler'`, event).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		if status == jobs.Completed {
+			break
+		}
 		time.Sleep(time.Millisecond)
+	}
+	if status != jobs.Completed {
+		t.Fatalf("run did not complete before cancellation: status=%s", status)
 	}
 	cancel()
 	if err = <-done; err != nil {
@@ -584,7 +594,6 @@ func TestJobsWorkerRunPollsUntilCancellation(t *testing.T) {
 	if h.calls.Load() != 1 {
 		t.Fatalf("handler calls=%d", h.calls.Load())
 	}
-	var status jobs.Status
 	if err = pool.QueryRow(ctx, `SELECT status FROM jobs WHERE event_id=$1 AND handler='run.handler'`, event).Scan(&status); err != nil || status != jobs.Completed {
 		t.Fatalf("run status=%s err=%v", status, err)
 	}
