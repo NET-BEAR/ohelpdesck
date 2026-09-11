@@ -810,3 +810,197 @@ func TestJobsRecoveryExhaustedLeaseMarksDeadAndNeverReclaims(t *testing.T) {
 		t.Fatalf("exhausted job reclaimed=%+v err=%v", next, err)
 	}
 }
+
+type blockingShutdownHandler struct {
+	started chan struct{}
+}
+
+func (h blockingShutdownHandler) Handle(ctx context.Context, _ pgx.Tx, _ jobs.DomainEvent) error {
+	select {
+	case h.started <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+type atomicEffectHandler struct {
+	calls atomic.Int32
+}
+
+func (h *atomicEffectHandler) Handle(ctx context.Context, tx pgx.Tx, event jobs.DomainEvent) error {
+	h.calls.Add(1)
+	_, err := tx.Exec(ctx, `INSERT INTO jobs_atomic_receipt_effects(event_id) VALUES($1)`, event.ID)
+	return err
+}
+
+func TestJobsDispatcherRollbackLeavesOutboxUndispatched(t *testing.T) {
+	ctx, pool := jobsFixture(t)
+	if _, err := pool.Exec(ctx, `CREATE OR REPLACE FUNCTION jobs_test_fail_second_fanout() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.handler='fanout.z-fail' THEN RAISE EXCEPTION 'fanout insert failure'; END IF; RETURN NEW; END $$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `CREATE TRIGGER jobs_test_fail_second_fanout BEFORE INSERT ON jobs FOR EACH ROW EXECUTE FUNCTION jobs_test_fail_second_fanout()`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS jobs_test_fail_second_fanout ON jobs`)
+		_, _ = pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS jobs_test_fail_second_fanout()`)
+	})
+
+	r := registry(t, &receiptHandler{}, "jobs.rollback", "fanout.a-good", "fanout.z-fail")
+	event := jobEvent(t, ctx, pool, "jobs.rollback")
+	if _, err := jobs.NewDispatcher(pool, r).DispatchBatch(ctx, 1); err == nil {
+		t.Fatal("fanout failure was accepted")
+	}
+	var jobsCount int
+	var dispatchedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE event_id=$1`, event).Scan(&jobsCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT dispatched_at FROM outbox_events WHERE id=$1`, event).Scan(&dispatchedAt); err != nil {
+		t.Fatal(err)
+	}
+	if jobsCount != 0 || dispatchedAt != nil {
+		t.Fatalf("partial fanout jobs=%d dispatched=%v", jobsCount, dispatchedAt)
+	}
+}
+
+func TestJobsConcurrentRecoveryAndClaimRespectsLeaseBudget(t *testing.T) {
+	ctx, pool := jobsFixture(t)
+	repo := jobs.NewRepository(pool)
+	id := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO jobs(id,type,handler,max_attempts,priority) VALUES($1,'domain_event','recovery.concurrent',2,-100)`, id); err != nil {
+		t.Fatal(err)
+	}
+	first, err := repo.Claim(ctx, "worker-first", time.Minute)
+	if err != nil || first == nil || first.Job.ID != id || first.Job.Attempts != 1 {
+		t.Fatalf("first claim=%+v err=%v", first, err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE jobs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	var recovered int
+	var recoveryErr, claimErr error
+	var claimed *jobs.Lease
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); <-start; recovered, recoveryErr = repo.RecoverExpired(ctx, 1) }()
+	go func() { defer wg.Done(); <-start; claimed, claimErr = repo.Claim(ctx, "worker-racer", time.Minute) }()
+	close(start)
+	wg.Wait()
+	if recoveryErr != nil || claimErr != nil || recovered != 1 {
+		t.Fatalf("recovered=%d recoveryErr=%v claim=%+v claimErr=%v", recovered, recoveryErr, claimed, claimErr)
+	}
+	var attempts int
+	var status jobs.Status
+	if err = pool.QueryRow(ctx, `SELECT attempts,status FROM jobs WHERE id=$1`, id).Scan(&attempts, &status); err != nil {
+		t.Fatal(err)
+	}
+	if attempts > 2 || (claimed != nil && (claimed.Job.ID != id || claimed.Job.Attempts != 2)) {
+		t.Fatalf("attempts=%d status=%s claimed=%+v", attempts, status, claimed)
+	}
+	if claimed == nil {
+		claimed, err = repo.Claim(ctx, "worker-after-recovery", time.Minute)
+		if err != nil || claimed == nil || claimed.Job.ID != id || claimed.Job.Attempts != 2 {
+			t.Fatalf("claim after recovery=%+v err=%v", claimed, err)
+		}
+	}
+	if err = repo.Complete(ctx, *claimed); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestJobsWorkerShutdownLeavesClaimForExpiryRecovery(t *testing.T) {
+	ctx, pool := jobsFixture(t)
+	event := jobEvent(t, ctx, pool, "jobs.shutdown")
+	h := blockingShutdownHandler{started: make(chan struct{}, 1)}
+	r := registry(t, h, "jobs.shutdown", "shutdown.handler")
+	repo := jobs.NewRepository(pool)
+	worker, err := jobs.NewWorker(jobs.NewDispatcher(pool, r), repo, r, jobs.WorkerConfig{WorkerID: "worker-shutdown", PollInterval: time.Millisecond, LeaseDuration: time.Minute, DispatchBatch: 1, RecoveryBatch: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(runCtx) }()
+	select {
+	case <-h.started:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("handler did not start")
+	}
+	cancel()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not respect shutdown context")
+	}
+	var status jobs.Status
+	if err = pool.QueryRow(ctx, `SELECT status FROM jobs WHERE event_id=$1 AND handler='shutdown.handler'`, event).Scan(&status); err != nil || status != jobs.Running {
+		t.Fatalf("shutdown job status=%s err=%v", status, err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE jobs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE event_id=$1 AND handler='shutdown.handler'`, event); err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := repo.RecoverExpired(ctx, 1); err != nil || recovered != 1 {
+		t.Fatalf("recovery=%d err=%v", recovered, err)
+	}
+}
+
+func TestJobsReceiptEffectStaysAtomicAcrossFailedCompleteAndRecovery(t *testing.T) {
+	ctx, pool := jobsFixture(t)
+	if _, err := pool.Exec(ctx, `CREATE TABLE jobs_atomic_receipt_effects(event_id uuid PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DROP TABLE IF EXISTS jobs_atomic_receipt_effects`) })
+	repo := jobs.NewRepository(pool)
+	event := jobEvent(t, ctx, pool, "jobs.atomic-receipt")
+	id := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO jobs(id,type,handler,event_id,max_attempts) VALUES($1,'domain_event','atomic.receipt',$2,2)`, id, event); err != nil {
+		t.Fatal(err)
+	}
+	first, err := repo.Claim(ctx, "worker-first", time.Minute)
+	if err != nil || first == nil {
+		t.Fatalf("first claim=%+v err=%v", first, err)
+	}
+	h := &atomicEffectHandler{}
+	if applied, err := repo.RunReceipt(ctx, *first, h); err != nil || !applied || h.calls.Load() != 1 {
+		t.Fatalf("first receipt applied=%v calls=%d err=%v", applied, h.calls.Load(), err)
+	}
+	stale := *first
+	stale.Token = uuid.New()
+	if err := repo.Complete(ctx, stale); !errors.Is(err, jobs.ErrStaleJobLease) {
+		t.Fatalf("complete failure=%v", err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE jobs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := repo.RecoverExpired(ctx, 1); err != nil || recovered != 1 {
+		t.Fatalf("recovery=%d err=%v", recovered, err)
+	}
+	second, err := repo.Claim(ctx, "worker-second", time.Minute)
+	if err != nil || second == nil || second.Job.ID != id {
+		t.Fatalf("second claim=%+v err=%v", second, err)
+	}
+	if applied, err := repo.RunReceipt(ctx, *second, h); err != nil || applied || h.calls.Load() != 1 {
+		t.Fatalf("duplicate receipt applied=%v calls=%d err=%v", applied, h.calls.Load(), err)
+	}
+	if err = repo.Complete(ctx, *second); err != nil {
+		t.Fatal(err)
+	}
+	var effects, receipts int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM jobs_atomic_receipt_effects WHERE event_id=$1`, event).Scan(&effects); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM event_handler_receipts WHERE event_id=$1 AND handler='atomic.receipt'`, event).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if effects != 1 || receipts != 1 {
+		t.Fatalf("effects=%d receipts=%d", effects, receipts)
+	}
+}
