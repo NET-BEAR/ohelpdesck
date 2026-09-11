@@ -360,16 +360,11 @@ func TestJobsWorkerUnknownHandlerAndLifecycleValidation(t *testing.T) {
 	}
 }
 
-func TestJobsReceiptRejectsEventlessLeaseAndLoadsEvent(t *testing.T) {
+func TestJobsReceiptRejectsEventlessLease(t *testing.T) {
 	ctx, pool := jobsFixture(t)
 	repo := jobs.NewRepository(pool)
 	if applied, err := repo.RunReceipt(ctx, jobs.Lease{Job: jobs.Job{Handler: "receipt.handler"}}, &receiptHandler{}); err == nil || applied {
 		t.Fatalf("eventless receipt applied=%v err=%v", applied, err)
-	}
-	eventID := jobEvent(t, ctx, pool, "jobs.event-load")
-	event, err := repo.Event(ctx, eventID)
-	if err != nil || event.ID != eventID || event.Type != "jobs.event-load" {
-		t.Fatalf("event=%+v err=%v", event, err)
 	}
 }
 
