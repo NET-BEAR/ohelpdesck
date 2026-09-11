@@ -63,9 +63,9 @@ func outboundFixture(t *testing.T) (context.Context, *database.Pool, uuid.UUID, 
 }
 
 func TestQueueOutboundIdempotencyAndMembership(t *testing.T) {
-	ctx, pool, channelID, inbound, user := outboundFixture(t)
+	ctx, pool, channelID, inbound, userID := outboundFixture(t)
 	service := core.NewOutboundService(pool)
-	command := core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: user.ID, Text: "We are looking into it", IdempotencyKey: "reply-" + uuid.NewString()}
+	command := core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: userID, Text: "We are looking into it", IdempotencyKey: "reply-" + uuid.NewString()}
 	first, err := service.QueueOutbound(ctx, command)
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +81,7 @@ func TestQueueOutboundIdempotencyAndMembership(t *testing.T) {
 		t.Fatalf("second=%+v first=%+v", second, first)
 	}
 	var messages, keys, queuedEvents int
-	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM messages WHERE conversation_id=$1 AND direction='outgoing'), (SELECT count(*) FROM message_idempotency_keys WHERE user_id=$2 AND idempotency_key=$3), (SELECT count(*) FROM outbox_events WHERE aggregate_id=$4 AND event_type='message.queued')`, inbound.ConversationID, user.ID, command.IdempotencyKey, first.ID).Scan(&messages, &keys, &queuedEvents); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM messages WHERE conversation_id=$1 AND direction='outgoing'), (SELECT count(*) FROM message_idempotency_keys WHERE user_id=$2 AND idempotency_key=$3), (SELECT count(*) FROM outbox_events WHERE aggregate_id=$4 AND event_type='message.queued')`, inbound.ConversationID, userID, command.IdempotencyKey, first.ID).Scan(&messages, &keys, &queuedEvents); err != nil {
 		t.Fatal(err)
 	}
 	if messages != 1 || keys != 1 || queuedEvents != 1 {
@@ -92,18 +92,18 @@ func TestQueueOutboundIdempotencyAndMembership(t *testing.T) {
 	if _, err := service.QueueOutbound(ctx, changed); !errors.Is(err, core.ErrIdempotencyConflict) {
 		t.Fatalf("error=%v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE channel_memberships SET can_reply=false WHERE channel_id=$1 AND user_id=$2`, channelID, user.ID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE channel_memberships SET can_reply=false WHERE channel_id=$1 AND user_id=$2`, channelID, userID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.QueueOutbound(ctx, core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: user.ID, Text: "new", IdempotencyKey: "new-" + uuid.NewString()}); !errors.Is(err, core.ErrConversationForbidden) {
+	if _, err := service.QueueOutbound(ctx, core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: userID, Text: "new", IdempotencyKey: "new-" + uuid.NewString()}); !errors.Is(err, core.ErrConversationForbidden) {
 		t.Fatalf("error=%v", err)
 	}
 }
 
 func TestQueueOutboundSameKeyRaceCreatesOneMessage(t *testing.T) {
-	ctx, pool, _, inbound, user := outboundFixture(t)
+	ctx, pool, _, inbound, userID := outboundFixture(t)
 	service := core.NewOutboundService(pool)
-	command := core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: user.ID, Text: "race", IdempotencyKey: "race-" + uuid.NewString()}
+	command := core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: userID, Text: "race", IdempotencyKey: "race-" + uuid.NewString()}
 	start := make(chan struct{})
 	results := make([]core.Message, 2)
 	errs := make([]error, 2)
@@ -118,7 +118,7 @@ func TestQueueOutboundSameKeyRaceCreatesOneMessage(t *testing.T) {
 		t.Fatalf("results=%+v errors=%v", results, errs)
 	}
 	var messages, keys int
-	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM messages WHERE conversation_id=$1 AND direction='outgoing'), (SELECT count(*) FROM message_idempotency_keys WHERE user_id=$2 AND idempotency_key=$3)`, inbound.ConversationID, user.ID, command.IdempotencyKey).Scan(&messages, &keys); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM messages WHERE conversation_id=$1 AND direction='outgoing'), (SELECT count(*) FROM message_idempotency_keys WHERE user_id=$2 AND idempotency_key=$3)`, inbound.ConversationID, userID, command.IdempotencyKey).Scan(&messages, &keys); err != nil {
 		t.Fatal(err)
 	}
 	if messages != 1 || keys != 1 {
@@ -127,13 +127,13 @@ func TestQueueOutboundSameKeyRaceCreatesOneMessage(t *testing.T) {
 }
 
 func TestOutboundSentFailedLifecycleRestoresOnlyCoveredEpisode(t *testing.T) {
-	ctx, pool, _, inbound, user := outboundFixture(t)
+	ctx, pool, _, inbound, userID := outboundFixture(t)
 	service := core.NewOutboundService(pool)
 	var originalWaiting time.Time
 	if err := pool.QueryRow(ctx, `SELECT waiting_since FROM conversations WHERE id=$1`, inbound.ConversationID).Scan(&originalWaiting); err != nil {
 		t.Fatal(err)
 	}
-	queued, err := service.QueueOutbound(ctx, core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: user.ID, Text: "first", IdempotencyKey: "first-" + uuid.NewString()})
+	queued, err := service.QueueOutbound(ctx, core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: userID, Text: "first", IdempotencyKey: "first-" + uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestOutboundSentFailedLifecycleRestoresOnlyCoveredEpisode(t *testing.T) {
 		t.Fatalf("event=%q restored=%v", eventType, eventRestored)
 	}
 
-	second, err := service.QueueOutbound(ctx, core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: user.ID, Text: "second", IdempotencyKey: "second-" + uuid.NewString()})
+	second, err := service.QueueOutbound(ctx, core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: userID, Text: "second", IdempotencyKey: "second-" + uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,8 +201,8 @@ func TestOutboundSentFailedLifecycleRestoresOnlyCoveredEpisode(t *testing.T) {
 }
 
 func TestOutboundRejectsInvalidTransitionAndRollsBackOutboxFailure(t *testing.T) {
-	ctx, pool, _, inbound, user := outboundFixture(t)
-	queued, err := core.NewOutboundService(pool).QueueOutbound(ctx, core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: user.ID, Text: "rollback", IdempotencyKey: "rollback-" + uuid.NewString()})
+	ctx, pool, _, inbound, userID := outboundFixture(t)
+	queued, err := core.NewOutboundService(pool).QueueOutbound(ctx, core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: userID, Text: "rollback", IdempotencyKey: "rollback-" + uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,16 +213,16 @@ func TestOutboundRejectsInvalidTransitionAndRollsBackOutboxFailure(t *testing.T)
 		t.Fatalf("error=%v", err)
 	}
 	failedService := core.NewOutboundService(pool, outboundFailingAppender{})
-	_, err = failedService.QueueOutbound(ctx, core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: user.ID, Text: "no persist", IdempotencyKey: "rollback-outbox-" + uuid.NewString()})
+	_, err = failedService.QueueOutbound(ctx, core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: userID, Text: "no persist", IdempotencyKey: "rollback-outbox-" + uuid.NewString()})
 	if err == nil || err.Error() != "injected outbound outbox failure" {
 		t.Fatalf("error=%v", err)
 	}
 }
 
 func TestQueueOutboundHTTPRequiresCSRFAndReturnsCanonicalRetry(t *testing.T) {
-	ctx, pool, _, inbound, user := outboundFixture(t)
+	ctx, pool, _, inbound, userID := outboundFixture(t)
 	repository := auth.NewRepository(pool)
-	session, csrf, err := repository.CreateSession(ctx, user.ID.String())
+	session, csrf, err := repository.CreateSession(ctx, userID.String())
 	if err != nil {
 		t.Fatal(err)
 	}
