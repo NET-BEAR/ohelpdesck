@@ -1,6 +1,6 @@
 # SPEC-030: durable dispatcher/jobs and worker leasing
 
-Статус задачи: `in_design`. Дата: 2026-09-11. Владелец: оркестратор.
+Статус задачи: `rework`. Дата: 2026-09-11. Владелец: оркестратор.
 
 ## Цель
 
@@ -29,10 +29,14 @@
 
 | Артефакт | Статус | Результат |
 |---|---|---|
-| [RND.md](RND.md) | ready_for_review | Checkout/spec evidence, boundaries and risks. |
-| [BUSINESS_ANALYSIS.md](BUSINESS_ANALYSIS.md) | ready_for_review | As-is/to-be, business rules, vocabulary and traceability. |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | draft | Schema, transaction/lease/receipt/runtime contract. |
-| [ACCEPTANCE_TESTS.md](ACCEPTANCE_TESTS.md) | ready_for_review | Given/When/Then and remote-only evidence. |
+| [RND.md](RND.md) | approved | Checkout/spec evidence, boundaries and risks. |
+| [BUSINESS_ANALYSIS.md](BUSINESS_ANALYSIS.md) | approved | As-is/to-be, business rules, vocabulary and traceability. |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | approved | Schema, transaction/lease/receipt/runtime contract. |
+| [ACCEPTANCE_TESTS.md](ACCEPTANCE_TESTS.md) | approved | Given/When/Then and remote-only evidence. |
+| Implementation | rework | P1 review finding: exhausted-attempt lease recovery must become `dead`; Claim must never violate `attempts <= max_attempts`. |
+| Remote validation | passed | CI/dev delivery `34635720836`; deployed SHA `a4fbea2`; migration 9, targeted jobs race and full remote suite passed. |
+| Independent review | rework_required | P1 found in exhausted-attempt lease recovery; review repeats after fix. |
+| QA | pending | Starts after review approval. |
 
 ## Decision gate
 
@@ -45,8 +49,25 @@
 3. Developer implements repository/registry/dispatcher, then worker/retry/receipt in minimal increments; all external calls stay absent.
 4. CI validates branch; manual workflow dispatch deploys verified SHA to remote dev.
 5. Remote migration, targeted/full `-race`, integration, coverage, `vet`, `gofmt` and runtime checks run on dev.
-6. Independent reviewer checks locking, atomicity, fencing, error redaction and scope.
+6. Independent reviewer checks locking, atomicity, fencing, error redaction, delivery configuration and scope.
 7. QA repeats remote acceptance/regression and records evidence; any defect returns to developer then review/QA.
+
+## Выполненное evidence — 2026-09-11
+
+- CI/dev delivery [34635720836](https://github.com/NET-BEAR/ohelpdesck/actions/runs/34635720836) завершён успешно: `verify` и `deploy-dev`.
+- На dev-контуре подтверждён SHA `a4fbea218bb1bcfae4857f4dca54d6b9d3e87077` и migration version `9`.
+- Удалённый `TestJobs` с `-race`, полный integration suite с `-race`, full Go coverage (**83,8% statements**), `go vet` и проверка `gofmt` завершились успешно.
+- Предыдущая неуспешная доставка была вызвана устаревшим статическим server compose-манифестом без обязательной `CHANNEL_CREDENTIALS_AES256_KEY`; манифест обновлён операторским путём без чтения или вывода runtime secrets, после чего повторная доставка прошла.
+
+## Review finding P1 — 2026-09-11
+
+- **Причина:** `RecoverExpired` возвращал в `pending` job с `attempts == max_attempts`; следующий `Claim` увеличивал счётчик, нарушая DB constraint и оставляя poison-row во главе очереди.
+- **Минимальная точка возврата:** implementation durable jobs. Разработчик исправляет recovery/claim и добавляет remote-ready regression для падения worker на последней попытке. Затем повторяются remote validation, независимый review и QA.
+
+## Последующее улучшение delivery boundary
+
+Статический compose-манифест намеренно не заменяется архивом из CI: это граница доверия deployment credential. Для будущих изменений его контракта требуется явное операторское обновление с резервной копией и post-update delivery verification. Эта операция зафиксирована как follow-up документации/инфраструктуры, а не скрыта в CI upload path.
+
 
 ## Completion criteria
 
