@@ -494,3 +494,98 @@ func TestJobsRegistryAndDispatcherInputValidation(t *testing.T) {
 		t.Fatalf("empty dispatch=%+v err=%v", result, err)
 	}
 }
+
+type retryAfterHandler struct {
+	calls atomic.Int32
+	delay time.Duration
+}
+
+func (h *retryAfterHandler) Handle(context.Context, pgx.Tx, jobs.DomainEvent) error {
+	h.calls.Add(1)
+	return &jobs.JobError{Class: jobs.Transient, Code: "upstream_busy", Message: "retry later", RetryAfter: &h.delay}
+}
+
+type cancelingHandler struct{ cancel context.CancelFunc }
+
+func (h cancelingHandler) Handle(context.Context, pgx.Tx, jobs.DomainEvent) error {
+	h.cancel()
+	return errors.New("interrupted during shutdown")
+}
+
+func TestJobsWorkerUsesRetryAfterAndLeavesCancelledWorkForRecovery(t *testing.T) {
+	ctx, pool := jobsFixture(t)
+	repo := jobs.NewRepository(pool)
+
+	retryEvent := jobEvent(t, ctx, pool, "jobs.retry-after")
+	retry := &retryAfterHandler{delay: 3 * time.Second}
+	retryRegistry := registry(t, retry, "jobs.retry-after", "retry.after")
+	worker, err := jobs.NewWorker(jobs.NewDispatcher(pool, retryRegistry), repo, retryRegistry, jobs.WorkerConfig{
+		WorkerID: "worker-retry-after", PollInterval: time.Millisecond, LeaseDuration: time.Minute, DispatchBatch: 10, RecoveryBatch: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now().UTC().Add(2500 * time.Millisecond)
+	if err = worker.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var status jobs.Status
+	var runAt time.Time
+	if err = pool.QueryRow(ctx, `SELECT status,run_at FROM jobs WHERE event_id=$1 AND handler='retry.after'`, retryEvent).Scan(&status, &runAt); err != nil {
+		t.Fatal(err)
+	}
+	if retry.calls.Load() != 1 || status != jobs.Pending || runAt.Before(before) {
+		t.Fatalf("calls=%d status=%s run_at=%s before=%s", retry.calls.Load(), status, runAt, before)
+	}
+
+	cancelEvent := jobEvent(t, ctx, pool, "jobs.cancelled-handler")
+	pollCtx, cancel := context.WithCancel(ctx)
+	cancelRegistry := registry(t, cancelingHandler{cancel: cancel}, "jobs.cancelled-handler", "cancel.handler")
+	cancelWorker, err := jobs.NewWorker(jobs.NewDispatcher(pool, cancelRegistry), repo, cancelRegistry, jobs.WorkerConfig{
+		WorkerID: "worker-cancel", PollInterval: time.Millisecond, LeaseDuration: time.Minute, DispatchBatch: 10, RecoveryBatch: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = cancelWorker.Poll(pollCtx); err != nil {
+		t.Fatal(err)
+	}
+	var lockedStatus jobs.Status
+	if err = pool.QueryRow(ctx, `SELECT status FROM jobs WHERE event_id=$1 AND handler='cancel.handler'`, cancelEvent).Scan(&lockedStatus); err != nil {
+		t.Fatal(err)
+	}
+	if lockedStatus != jobs.Running {
+		t.Fatalf("cancelled work status=%s", lockedStatus)
+	}
+}
+
+func TestJobsWorkerRunPollsUntilCancellation(t *testing.T) {
+	ctx, pool := jobsFixture(t)
+	event := jobEvent(t, ctx, pool, "jobs.run")
+	h := &receiptHandler{}
+	r := registry(t, h, "jobs.run", "run.handler")
+	worker, err := jobs.NewWorker(jobs.NewDispatcher(pool, r), jobs.NewRepository(pool), r, jobs.WorkerConfig{
+		WorkerID: "worker-run", PollInterval: time.Millisecond, LeaseDuration: time.Minute, DispatchBatch: 10, RecoveryBatch: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(runCtx) }()
+	deadline := time.Now().Add(time.Second)
+	for h.calls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+	if h.calls.Load() != 1 {
+		t.Fatalf("handler calls=%d", h.calls.Load())
+	}
+	var status jobs.Status
+	if err = pool.QueryRow(ctx, `SELECT status FROM jobs WHERE event_id=$1 AND handler='run.handler'`, event).Scan(&status); err != nil || status != jobs.Completed {
+		t.Fatalf("run status=%s err=%v", status, err)
+	}
+}
