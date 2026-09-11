@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -36,6 +37,7 @@ func jobsFixture(t *testing.T) (context.Context, *database.Pool) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM jobs WHERE event_id IS NULL AND handler='test.handler'`)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM outbox_events WHERE aggregate_type='jobs-integration'`)
 	})
 	return ctx, pool
@@ -211,5 +213,196 @@ func TestJobsRetryDeadAndReceiptDeduplication(t *testing.T) {
 	var code, msg string
 	if err = pool.QueryRow(ctx, `SELECT status,last_error_code,last_error_message FROM jobs WHERE id=$1`, id).Scan(&status, &code, &msg); err != nil || status != jobs.Dead || code != "exhausted" || msg != "will be dead" {
 		t.Fatalf("status=%s code=%s msg=%s err=%v", status, code, msg, err)
+	}
+}
+
+type failingReceiptHandler struct{ err error }
+
+func (h failingReceiptHandler) Handle(context.Context, pgx.Tx, jobs.DomainEvent) error { return h.err }
+
+func TestJobsRepositoryLeaseOperationsAndFailurePolicies(t *testing.T) {
+	ctx, pool := jobsFixture(t)
+	repo := jobs.NewRepository(pool)
+	if lease, err := repo.Claim(ctx, "", time.Second); err == nil || lease != nil {
+		t.Fatalf("empty worker claim=%+v err=%v", lease, err)
+	}
+	if lease, err := repo.Claim(ctx, "worker", 0); err == nil || lease != nil {
+		t.Fatalf("zero lease claim=%+v err=%v", lease, err)
+	}
+	if recovered, err := repo.RecoverExpired(ctx, 0); err == nil || recovered != 0 {
+		t.Fatalf("zero recovery=%d err=%v", recovered, err)
+	}
+	id := insertJob(t, ctx, pool, 10)
+	lease, err := repo.Claim(ctx, "worker-a", time.Minute)
+	if err != nil || lease == nil || lease.Job.ID != id {
+		t.Fatalf("claim=%+v err=%v", lease, err)
+	}
+	if err = repo.Extend(ctx, *lease, 0); err == nil {
+		t.Fatal("zero extension accepted")
+	}
+	if err = repo.Extend(ctx, *lease, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	longCode := strings.Repeat("x", 80)
+	longMessage := strings.Repeat("m", 300)
+	if err = repo.Reschedule(ctx, *lease, &jobs.JobError{Class: jobs.Transient, Code: longCode, Message: longMessage}, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	var status jobs.Status
+	var code, message string
+	if err = pool.QueryRow(ctx, `SELECT status,last_error_code,last_error_message FROM jobs WHERE id=$1`, id).Scan(&status, &code, &message); err != nil {
+		t.Fatal(err)
+	}
+	if status != jobs.Pending || len(code) != 64 || len(message) != 256 {
+		t.Fatalf("rescheduled status=%s code=%d message=%d", status, len(code), len(message))
+	}
+	if err = repo.Complete(ctx, *lease); !errors.Is(err, jobs.ErrStaleJobLease) {
+		t.Fatalf("stale completion=%v", err)
+	}
+	if err = repo.Reschedule(ctx, *lease, nil, time.Second); !errors.Is(err, jobs.ErrStaleJobLease) {
+		t.Fatalf("stale reschedule=%v", err)
+	}
+
+	defaultID := insertJob(t, ctx, pool, 10)
+	defaultLease, err := repo.Claim(ctx, "worker-default", time.Minute)
+	if err != nil || defaultLease == nil || defaultLease.Job.ID != defaultID {
+		t.Fatalf("default claim=%+v err=%v", defaultLease, err)
+	}
+	if err = repo.Reschedule(ctx, *defaultLease, nil, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT status,last_error_code,last_error_message FROM jobs WHERE id=$1`, defaultID).Scan(&status, &code, &message); err != nil || status != jobs.Pending || code != "internal_error" || message != "job failed" {
+		t.Fatalf("default failure status=%s code=%s message=%s err=%v", status, code, message, err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE jobs SET run_at=clock_timestamp()-interval '1 second' WHERE id=$1`, defaultID); err != nil {
+		t.Fatal(err)
+	}
+	permanentLease, err := repo.Claim(ctx, "worker-permanent", time.Minute)
+	if err != nil || permanentLease == nil {
+		t.Fatalf("permanent claim=%+v err=%v", permanentLease, err)
+	}
+	if err = repo.Reschedule(ctx, *permanentLease, &jobs.JobError{Class: jobs.Permanent, Code: "rejected", Message: "do not retry"}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT status FROM jobs WHERE id=$1`, defaultID).Scan(&status); err != nil || status != jobs.Dead {
+		t.Fatalf("permanent status=%s err=%v", status, err)
+	}
+}
+
+func TestJobsWorkerPollCompletesAndHandlesFailures(t *testing.T) {
+	ctx, pool := jobsFixture(t)
+	event := jobEvent(t, ctx, pool, "jobs.worker")
+	h := &receiptHandler{}
+	r := registry(t, h, "jobs.worker", "worker.ok")
+	dispatcher := jobs.NewDispatcher(pool, r)
+	repo := jobs.NewRepository(pool)
+	worker, err := jobs.NewWorker(dispatcher, repo, r, jobs.WorkerConfig{WorkerID: "worker-ok", PollInterval: time.Millisecond, LeaseDuration: time.Minute, DispatchBatch: 10, RecoveryBatch: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if h.calls.Load() != 1 {
+		t.Fatalf("handler calls=%d", h.calls.Load())
+	}
+	var status jobs.Status
+	if err = pool.QueryRow(ctx, `SELECT status FROM jobs WHERE event_id=$1 AND handler='worker.ok'`, event).Scan(&status); err != nil || status != jobs.Completed {
+		t.Fatalf("completed status=%s err=%v", status, err)
+	}
+
+	failedEvent := jobEvent(t, ctx, pool, "jobs.fail")
+	failing := failingReceiptHandler{err: errors.New("handler down")}
+	failRegistry := registry(t, failing, "jobs.fail", "worker.fail")
+	failWorker, err := jobs.NewWorker(jobs.NewDispatcher(pool, failRegistry), repo, failRegistry, jobs.WorkerConfig{WorkerID: "worker-fail", PollInterval: time.Millisecond, LeaseDuration: time.Minute, DispatchBatch: 10, RecoveryBatch: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = failWorker.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var failedStatus jobs.Status
+	var errorCode string
+	if err = pool.QueryRow(ctx, `SELECT status,last_error_code FROM jobs WHERE event_id=$1 AND handler='worker.fail'`, failedEvent).Scan(&failedStatus, &errorCode); err != nil || failedStatus != jobs.Pending || errorCode != "internal_error" {
+		t.Fatalf("failed status=%s code=%s err=%v", failedStatus, errorCode, err)
+	}
+}
+
+func TestJobsWorkerUnknownHandlerAndLifecycleValidation(t *testing.T) {
+	ctx, pool := jobsFixture(t)
+	repo := jobs.NewRepository(pool)
+	id := insertJob(t, ctx, pool, 1)
+	r := jobs.NewRegistry()
+	worker, err := jobs.NewWorker(jobs.NewDispatcher(pool, r), repo, r, jobs.WorkerConfig{WorkerID: "worker-unknown", PollInterval: time.Millisecond, LeaseDuration: time.Minute, DispatchBatch: 1, RecoveryBatch: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var status jobs.Status
+	var code string
+	if err = pool.QueryRow(ctx, `SELECT status,last_error_code FROM jobs WHERE id=$1`, id).Scan(&status, &code); err != nil || status != jobs.Dead || code != "unknown_handler" {
+		t.Fatalf("unknown handler status=%s code=%s err=%v", status, code, err)
+	}
+	if _, err = jobs.NewWorker(nil, repo, r, jobs.WorkerConfig{WorkerID: "x", PollInterval: time.Millisecond, LeaseDuration: time.Second, DispatchBatch: 1, RecoveryBatch: 1}); err == nil {
+		t.Fatal("nil dispatcher accepted")
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err = worker.Poll(cancelled); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(cancelled) }()
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestJobsReceiptRejectsEventlessLeaseAndLoadsEvent(t *testing.T) {
+	ctx, pool := jobsFixture(t)
+	repo := jobs.NewRepository(pool)
+	if applied, err := repo.RunReceipt(ctx, jobs.Lease{Job: jobs.Job{Handler: "receipt.handler"}}, &receiptHandler{}); err == nil || applied {
+		t.Fatalf("eventless receipt applied=%v err=%v", applied, err)
+	}
+	eventID := jobEvent(t, ctx, pool, "jobs.event-load")
+	event, err := repo.Event(ctx, eventID)
+	if err != nil || event.ID != eventID || event.Type != "jobs.event-load" {
+		t.Fatalf("event=%+v err=%v", event, err)
+	}
+}
+
+func TestJobsRegistryAndDispatcherInputValidation(t *testing.T) {
+	r := jobs.NewRegistry()
+	if err := r.Register(jobs.Route{}, &receiptHandler{}); err == nil {
+		t.Fatal("blank route accepted")
+	}
+	if err := r.Register(jobs.Route{EventType: "event", Handler: "handler"}, nil); err == nil {
+		t.Fatal("nil handler accepted")
+	}
+	h := &receiptHandler{}
+	if err := r.Register(jobs.Route{EventType: " event ", Handler: " handler "}, h); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(jobs.Route{EventType: "event", Handler: "handler"}, h); err == nil {
+		t.Fatal("duplicate handler accepted")
+	}
+	if got := r.EventTypes(); len(got) != 1 || got[0] != "event" {
+		t.Fatalf("event types=%v", got)
+	}
+	if got := r.Routes("event"); len(got) != 1 || got[0].Handler != "handler" {
+		t.Fatalf("routes=%+v", got)
+	}
+	if _, ok := r.Resolve("missing"); ok {
+		t.Fatal("unknown handler resolved")
+	}
+	ctx, pool := jobsFixture(t)
+	if _, err := jobs.NewDispatcher(pool, jobs.NewRegistry()).DispatchBatch(ctx, 0); err == nil {
+		t.Fatal("zero batch accepted")
+	}
+	result, err := jobs.NewDispatcher(pool, jobs.NewRegistry()).DispatchBatch(ctx, 1)
+	if err != nil || result.Events != 0 || result.Jobs != 0 {
+		t.Fatalf("empty dispatch=%+v err=%v", result, err)
 	}
 }
