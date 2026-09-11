@@ -431,3 +431,46 @@ func TestOutboundTransitionRejectsNonAgentAndRollsBackOutboxFailure(t *testing.T
 		t.Fatalf("second sent changed closed episode waiting=%v first_response=%v", waiting, firstResponse)
 	}
 }
+
+func TestOutboundTransitionZeroIDAndFailedOutboxRollback(t *testing.T) {
+	ctx, pool, _, inbound, userID := outboundFixture(t)
+	service := core.NewOutboundService(pool)
+	if err := service.MarkSent(ctx, core.MarkMessageSentCommand{}); !errors.Is(err, core.ErrMessageNotFound) {
+		t.Fatalf("zero sent error=%v", err)
+	}
+	if err := service.MarkFailed(ctx, core.MarkMessageFailedCommand{ErrorCode: "provider_rejected"}); !errors.Is(err, core.ErrMessageNotFound) {
+		t.Fatalf("zero failed error=%v", err)
+	}
+
+	queued, err := service.QueueOutbound(ctx, core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: userID, Text: "rollback failed", IdempotencyKey: "rollback-failed-" + uuid.NewString()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing := core.NewOutboundService(pool, outboundFailingAppender{})
+	failed := core.MarkMessageFailedCommand{MessageID: queued.ID, ErrorCode: "provider_rejected", ErrorMessage: "definitive failure"}
+	if err := failing.MarkFailed(ctx, failed); err == nil || err.Error() != "injected outbound outbox failure" {
+		t.Fatalf("queued mark failed outbox error=%v", err)
+	}
+	var status core.MessageStatus
+	var waiting *time.Time
+	if err := pool.QueryRow(ctx, `SELECT m.status,c.waiting_since FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.id=$1`, queued.ID).Scan(&status, &waiting); err != nil {
+		t.Fatal(err)
+	}
+	if status != core.MessageQueued || waiting == nil {
+		t.Fatalf("queued failure rollback status=%s waiting=%v", status, waiting)
+	}
+
+	if err := service.MarkSent(ctx, core.MarkMessageSentCommand{MessageID: queued.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := failing.MarkFailed(ctx, failed); err == nil || err.Error() != "injected outbound outbox failure" {
+		t.Fatalf("sent mark failed outbox error=%v", err)
+	}
+	var closedBy *uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT m.status,c.waiting_since,c.waiting_closed_by_message_id FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.id=$1`, queued.ID).Scan(&status, &waiting, &closedBy); err != nil {
+		t.Fatal(err)
+	}
+	if status != core.MessageSent || waiting != nil || closedBy == nil || *closedBy != queued.ID {
+		t.Fatalf("sent correction rollback status=%s waiting=%v closed_by=%v", status, waiting, closedBy)
+	}
+}
