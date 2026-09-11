@@ -3,6 +3,21 @@ info:
   title: OHelpdesck Foundation API
   version: 0.1.0
 paths:
+  /api/v1/webhooks/telegram-bot/{channel_id}:
+    post:
+      operationId: receiveTelegramBotWebhook
+      parameters:
+        - name: channel_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '204': {description: Update accepted or safely ignored}
+        '400': {description: Malformed update, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: Invalid Telegram webhook secret, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Unknown or non-Telegram channel, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '405': {description: POST required}
+        '503': {description: Inbound persistence unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   /health/live:
     get:
       operationId: liveness
@@ -96,7 +111,6 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/User'}
-        '400': {description: Validation error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '403': {description: Missing user.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '409': {description: Login or email already exists, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
@@ -120,7 +134,6 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/User'}
-        '400': {description: Validation error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '403': {description: Missing user.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '404': {description: User not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
@@ -178,10 +191,81 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/PermissionBundle'}
-        '400': {description: Validation error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '400': {description: Validation error, invalid channel UUID or request, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '403': {description: Missing role.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '409': {description: Bundle name already exists, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/channels:
+    get:
+      operationId: listChannels
+      security: [{SessionCookie: []}]
+      responses:
+        '200': {description: Channels without provider credentials, content: {application/json: {schema: {$ref: '#/components/schemas/Channels'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing channel.manage, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '503': {description: Channel administration unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    post:
+      operationId: createChannel
+      security: [{SessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateChannelRequest'}
+      responses:
+        '201': {description: Disabled channel created; credentials are never returned, content: {application/json: {schema: {$ref: '#/components/schemas/Channel'}}}}
+        '400': {description: Validation error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing channel.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '503': {description: Channel administration unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/channels/{id}:
+    get:
+      operationId: getChannel
+      security: [{SessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/ChannelID'}]
+      responses:
+        '200': {description: Channel without provider credentials, content: {application/json: {schema: {$ref: '#/components/schemas/Channel'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing channel.manage, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Channel not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '400': {description: Invalid channel UUID, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '503': {description: Channel administration unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    patch:
+      operationId: patchChannel
+      security: [{SessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/ChannelID'}, {$ref: '#/components/parameters/CSRFToken'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PatchChannelRequest'}
+      responses:
+        '200': {description: Updated channel without provider credentials, content: {application/json: {schema: {$ref: '#/components/schemas/Channel'}}}}
+        '400': {description: Validation error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing channel.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Channel not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '503': {description: Channel administration unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/channels/{id}/actions/{action}:
+    post:
+      operationId: channelAction
+      security: [{SessionCookie: []}]
+      parameters:
+        - $ref: '#/components/parameters/ChannelID'
+        - name: action
+          in: path
+          required: true
+          schema: {type: string, enum: [validate, enable, disable]}
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200': {description: Validation result or changed channel, content: {application/json: {schema: {oneOf: [{$ref: '#/components/schemas/Channel'}, {$ref: '#/components/schemas/ChannelValidation'}]}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing channel.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Channel not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '409': {description: Channel cannot be enabled before local validation succeeds, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '400': {description: Invalid channel UUID, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '503': {description: Channel administration unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   /api/v1/conversations/{id}/status:
     patch:
       operationId: changeConversationStatus
@@ -257,6 +341,11 @@ components:
       in: cookie
       name: ohelpdesck_session
   parameters:
+    ChannelID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -355,6 +444,50 @@ components:
         id: {type: string, format: uuid}
         name: {type: string}
         permissions: {type: array, items: {type: string}, uniqueItems: true}
+    ChannelType:
+      type: string
+      enum: [email, telegram, telegram_bot, telegram_user, carrotquest, omni, max, vk]
+    Channel:
+      type: object
+      additionalProperties: false
+      required: [id, type, name, status, enabled, config, has_credentials]
+      properties:
+        id: {type: string, format: uuid}
+        type: {$ref: '#/components/schemas/ChannelType'}
+        name: {type: string}
+        status: {type: string, enum: [active, degraded, reauthorization_required, disabled, error]}
+        enabled: {type: boolean}
+        config: {type: object, additionalProperties: true}
+        has_credentials: {type: boolean}
+    Channels:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Channel'}}
+    CreateChannelRequest:
+      type: object
+      additionalProperties: false
+      required: [type, name, config, credentials]
+      properties:
+        type: {$ref: '#/components/schemas/ChannelType'}
+        name: {type: string, minLength: 1, maxLength: 255}
+        config: {type: object, additionalProperties: true}
+        credentials: {type: object, additionalProperties: true, writeOnly: true}
+    PatchChannelRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: {type: string, minLength: 1, maxLength: 255}
+        config: {type: object, additionalProperties: true}
+        credentials: {type: object, additionalProperties: true, writeOnly: true}
+    ChannelValidation:
+      type: object
+      additionalProperties: false
+      required: [valid]
+      properties:
+        valid: {type: boolean}
     CreatePermissionBundleRequest:
       type: object
       additionalProperties: false

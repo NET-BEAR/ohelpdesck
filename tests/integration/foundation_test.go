@@ -40,13 +40,31 @@ func TestFoundation(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		want := 5
-		if d == "down" || (d == "status" && v == 4) {
-			want = 4
+		want := 8
+		if d == "down" || (d == "status" && v == 7) {
+			want = 7
 		}
 		if (d == "up" || d == "status" && v != 0) && v != want {
 			t.Fatalf("migration %s: got %d want %d", d, v, want)
 		}
+	}
+	if _, e = p.Migrate(ctx, "down"); e != nil {
+		t.Fatal(e)
+	} // rollback v8
+	if _, e = p.Migrate(ctx, "down"); e != nil {
+		t.Fatal(e)
+	} // rollback v7
+	if _, e = p.Migrate(ctx, "down"); e == nil {
+		t.Fatal("irreversible enum migration v6 rolled back")
+	}
+	if v, e := p.Migrate(ctx, "status"); e != nil || v != 6 {
+		t.Fatalf("irreversible migration state=%d err=%v", v, e)
+	}
+	if _, e = p.Migrate(ctx, "up"); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = p.Migrate(ctx, "up"); e != nil {
+		t.Fatal(e)
 	}
 	if _, e = p.Migrate(ctx, "invalid"); e == nil {
 		t.Fatal("bad direction")

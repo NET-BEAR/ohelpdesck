@@ -16,6 +16,7 @@ x-app: &app
     S3_BUCKET: support-dev
     S3_ACCESS_KEY: ${S3_ACCESS_KEY:?run make bootstrap}
     S3_SECRET_KEY: ${S3_SECRET_KEY:?run make bootstrap}
+    CHANNEL_CREDENTIALS_AES256_KEY: ${CHANNEL_CREDENTIALS_AES256_KEY:?provide a base64-encoded 32-byte key}
     S3_USE_SSL: "false"
   init: true
   user: "65532:65532"

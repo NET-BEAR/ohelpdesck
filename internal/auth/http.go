@@ -11,7 +11,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/NET-BEAR/ohelpdesck/internal/channels"
 	"github.com/NET-BEAR/ohelpdesck/internal/core"
+	"github.com/google/uuid"
 	"time"
 
 	"github.com/NET-BEAR/ohelpdesck/internal/platform/telemetry"
@@ -27,6 +29,7 @@ type HTTPHandler struct {
 	log           *slog.Logger
 	conversations *core.ConversationService
 	outbound      *core.OutboundService
+	channels      *channels.Service
 }
 
 type Observability struct {
@@ -50,6 +53,15 @@ func NewOperatorHTTPHandler(repository *Repository, secureCookie bool, conversat
 func NewOperatorOutboundHTTPHandler(repository *Repository, secureCookie bool, conversations *core.ConversationService, outbound *core.OutboundService, observability ...Observability) http.Handler {
 	h := newHTTPHandler(repository, secureCookie, conversations, observability...)
 	h.outbound = outbound
+	return h
+}
+
+// NewOperatorOutboundChannelsHTTPHandler mounts authenticated channel
+// administration alongside the existing operator and outbound boundaries.
+func NewOperatorOutboundChannelsHTTPHandler(repository *Repository, secureCookie bool, conversations *core.ConversationService, outbound *core.OutboundService, channelService *channels.Service, observability ...Observability) http.Handler {
+	h := newHTTPHandler(repository, secureCookie, conversations, observability...)
+	h.outbound = outbound
+	h.channels = channelService
 	return h
 }
 
@@ -78,6 +90,12 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		h.clearCookie(w)
 		w.WriteHeader(http.StatusNoContent)
+	case r.URL.Path == "/api/v1/channels" && r.Method == http.MethodGet:
+		h.listChannels(w, r)
+	case r.URL.Path == "/api/v1/channels" && r.Method == http.MethodPost:
+		h.createChannel(w, r)
+	case strings.HasPrefix(r.URL.Path, "/api/v1/channels/"):
+		h.channelCommand(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/v1/conversations/") && r.Method == http.MethodPatch:
 		h.conversationCommand(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/v1/conversations/") && r.Method == http.MethodPost:
@@ -220,6 +238,142 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, safeUser(Principal{UserID: user.ID, Login: user.Login, Email: user.Email, Name: user.Name, Role: user.Role}, user.Status, nil))
 	default:
 		writeError(w, http.StatusNotFound, "not_found")
+	}
+}
+
+func (h *HTTPHandler) listChannels(w http.ResponseWriter, r *http.Request) {
+	principal, _, ok := h.authenticate(w, r, false)
+	if !ok || !h.allowed(w, r, principal, PermissionChannelManage) {
+		return
+	}
+	if h.channels == nil {
+		writeError(w, http.StatusServiceUnavailable, "channel_administration_unavailable")
+		return
+	}
+	items, err := h.channels.List(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (h *HTTPHandler) createChannel(w http.ResponseWriter, r *http.Request) {
+	principal, _, ok := h.authenticate(w, r, true)
+	if !ok || !h.allowed(w, r, principal, PermissionChannelManage) {
+		return
+	}
+	if h.channels == nil {
+		writeError(w, http.StatusServiceUnavailable, "channel_administration_unavailable")
+		return
+	}
+	var input channels.CreateInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	channel, err := h.channels.Create(r.Context(), h.channelAuditContext(r, principal), input)
+	if err != nil {
+		writeChannelError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, channel)
+}
+
+func (h *HTTPHandler) channelCommand(w http.ResponseWriter, r *http.Request) {
+	principal, _, ok := h.authenticate(w, r, r.Method != http.MethodGet)
+	if !ok || !h.allowed(w, r, principal, PermissionChannelManage) {
+		return
+	}
+	if h.channels == nil {
+		writeError(w, http.StatusServiceUnavailable, "channel_administration_unavailable")
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/channels/")
+	parts := strings.Split(path, "/")
+	if len(parts) == 0 || parts[0] == "" || strings.Contains(parts[0], " ") {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	id := parts[0]
+	if _, err := uuid.Parse(id); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_failed")
+		return
+	}
+	if len(parts) == 1 && r.Method == http.MethodGet {
+		channel, err := h.channels.Get(r.Context(), id)
+		if err != nil {
+			writeChannelError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, channel)
+		return
+	}
+	if len(parts) == 1 && r.Method == http.MethodPatch {
+		var input channels.PatchInput
+		if !decodeJSON(w, r, &input) {
+			return
+		}
+		channel, err := h.channels.Patch(r.Context(), h.channelAuditContext(r, principal), id, input)
+		if err != nil {
+			writeChannelError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, channel)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "actions" && r.Method == http.MethodPost {
+		switch parts[2] {
+		case "validate":
+			result, err := h.channels.Validate(r.Context(), h.channelAuditContext(r, principal), id)
+			if err != nil {
+				writeChannelError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, result)
+		case "enable":
+			channel, err := h.channels.Enable(r.Context(), h.channelAuditContext(r, principal), id)
+			if err != nil {
+				writeChannelError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, channel)
+		case "disable":
+			channel, err := h.channels.Disable(r.Context(), h.channelAuditContext(r, principal), id)
+			if err != nil {
+				writeChannelError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, channel)
+		default:
+			writeError(w, http.StatusNotFound, "not_found")
+		}
+		return
+	}
+	writeError(w, http.StatusNotFound, "not_found")
+}
+
+func (h *HTTPHandler) channelAuditContext(r *http.Request, principal Principal) channels.AuditContext {
+	correlation := r.Header.Get("X-Request-ID")
+	if _, err := uuid.Parse(correlation); err != nil {
+		correlation = uuid.NewString()
+	}
+	return channels.AuditContext{ActorID: principal.UserID, CorrelationID: correlation}
+}
+
+func writeChannelError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, channels.ErrNotFound):
+		writeError(w, http.StatusNotFound, "channel_not_found")
+	case errors.Is(err, channels.ErrCredentialsMissing):
+		writeError(w, http.StatusConflict, "channel_not_ready")
+	case errors.Is(err, channels.ErrProviderValidationUnavailable):
+		writeError(w, http.StatusConflict, "channel_provider_validation_unavailable")
+	case errors.Is(err, channels.ErrStaleConfig):
+		writeError(w, http.StatusConflict, "channel_configuration_changed")
+	case errors.Is(err, channels.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "validation_failed")
+	default:
+		writeError(w, http.StatusInternalServerError, "internal_error")
 	}
 }
 

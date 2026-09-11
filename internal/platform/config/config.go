@@ -1,9 +1,11 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -12,6 +14,9 @@ type Config struct {
 	S3UseSSL                                                                                                                                                 bool
 	ShutdownTimeout, ReadTimeout, WriteTimeout, IdleTimeout                                                                                                  time.Duration
 	MaxConnections                                                                                                                                           int32
+	ChannelCredentialsKey                                                                                                                                    []byte
+	ChannelCredentialsKeyID                                                                                                                                  string
+	ChannelCredentialsPreviousKeys                                                                                                                           map[string][]byte
 }
 
 func Load(get func(string) string) (Config, error) {
@@ -65,6 +70,30 @@ func Load(get func(string) string) (Config, error) {
 		if e != nil || u.Host == "" {
 			return Config{}, invalid("invalid %s", k)
 		}
+	}
+	key, e := base64.StdEncoding.DecodeString(get("CHANNEL_CREDENTIALS_AES256_KEY"))
+	if e != nil || len(key) != 32 {
+		return Config{}, invalid("invalid CHANNEL_CREDENTIALS_AES256_KEY")
+	}
+	c.ChannelCredentialsKey = key
+	c.ChannelCredentialsKeyID = get("CHANNEL_CREDENTIALS_KEY_ID")
+	if c.ChannelCredentialsKeyID == "" {
+		c.ChannelCredentialsKeyID = "v1"
+	}
+	c.ChannelCredentialsPreviousKeys = map[string][]byte{}
+	for _, entry := range strings.Split(get("CHANNEL_CREDENTIALS_PREVIOUS_KEYS"), ",") {
+		if entry == "" {
+			continue
+		}
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) != 2 || parts[0] == "" {
+			return Config{}, invalid("invalid CHANNEL_CREDENTIALS_PREVIOUS_KEYS")
+		}
+		decoded, err := base64.StdEncoding.DecodeString(parts[1])
+		if err != nil || len(decoded) != 32 {
+			return Config{}, invalid("invalid CHANNEL_CREDENTIALS_PREVIOUS_KEYS")
+		}
+		c.ChannelCredentialsPreviousKeys[parts[0]] = decoded
 	}
 	return c, nil
 }
