@@ -576,10 +576,11 @@ func TestJobsWorkerRunPollsUntilCancellation(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	var status jobs.Status
 	for time.Now().Before(deadline) {
-		if err = pool.QueryRow(ctx, `SELECT status FROM jobs WHERE event_id=$1 AND handler='run.handler'`, event).Scan(&status); err != nil {
+		err = pool.QueryRow(ctx, `SELECT status FROM jobs WHERE event_id=$1 AND handler='run.handler'`, event).Scan(&status)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			t.Fatal(err)
 		}
-		if status == jobs.Completed {
+		if err == nil && status == jobs.Completed {
 			break
 		}
 		time.Sleep(time.Millisecond)
