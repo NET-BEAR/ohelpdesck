@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"sort"
 	"strings"
 	"time"
@@ -199,7 +200,7 @@ func (r *Repository) Claim(ctx context.Context, workerID string, lease time.Dura
 	}
 	token := uuid.New()
 	var job Job
-	e := r.db.QueryRow(ctx, `WITH candidate AS (SELECT id FROM jobs WHERE status='pending' AND run_at<=clock_timestamp() ORDER BY priority,run_at,created_at FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE jobs j SET status='running',locked_by=$1,locked_at=clock_timestamp(),lease_expires_at=clock_timestamp()+$2::interval,lease_token=$3,attempts=attempts+1,updated_at=clock_timestamp() FROM candidate WHERE j.id=candidate.id RETURNING j.id,j.type,j.handler,j.status,j.event_id,j.attempts,j.max_attempts,j.priority,j.run_at,j.locked_by,j.lease_token,j.lease_expires_at`, workerID, lease.String(), token).Scan(&job.ID, &job.Type, &job.Handler, &job.Status, &job.EventID, &job.Attempts, &job.MaxAttempts, &job.Priority, &job.RunAt, &job.LockedBy, &job.LeaseToken, &job.LeaseExpiresAt)
+	e := r.db.QueryRow(ctx, `WITH candidate AS (SELECT id FROM jobs WHERE status='pending' AND attempts<max_attempts AND run_at<=clock_timestamp() ORDER BY priority,run_at,created_at FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE jobs j SET status='running',locked_by=$1,locked_at=clock_timestamp(),lease_expires_at=clock_timestamp()+$2::interval,lease_token=$3,attempts=attempts+1,updated_at=clock_timestamp() FROM candidate WHERE j.id=candidate.id RETURNING j.id,j.type,j.handler,j.status,j.event_id,j.attempts,j.max_attempts,j.priority,j.run_at,j.locked_by,j.lease_token,j.lease_expires_at`, workerID, lease.String(), token).Scan(&job.ID, &job.Type, &job.Handler, &job.Status, &job.EventID, &job.Attempts, &job.MaxAttempts, &job.Priority, &job.RunAt, &job.LockedBy, &job.LeaseToken, &job.LeaseExpiresAt)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -228,7 +229,7 @@ func (r *Repository) RecoverExpired(ctx context.Context, limit int) (int, error)
 	if limit <= 0 {
 		return 0, fmt.Errorf("recovery limit must be positive")
 	}
-	tag, e := r.db.Exec(ctx, `WITH expired AS (SELECT id FROM jobs WHERE status='running' AND lease_expires_at<clock_timestamp() ORDER BY lease_expires_at FOR UPDATE SKIP LOCKED LIMIT $1) UPDATE jobs j SET status='pending',run_at=clock_timestamp(),updated_at=clock_timestamp(),locked_by=NULL,locked_at=NULL,lease_expires_at=NULL,lease_token=NULL FROM expired WHERE j.id=expired.id`, limit)
+	tag, e := r.db.Exec(ctx, `WITH expired AS (SELECT id FROM jobs WHERE status='running' AND lease_expires_at<clock_timestamp() ORDER BY lease_expires_at FOR UPDATE SKIP LOCKED LIMIT $1) UPDATE jobs j SET status=CASE WHEN j.attempts>=j.max_attempts THEN 'dead'::job_status ELSE 'pending'::job_status END,run_at=CASE WHEN j.attempts>=j.max_attempts THEN j.run_at ELSE clock_timestamp() END,updated_at=clock_timestamp(),locked_by=NULL,locked_at=NULL,lease_expires_at=NULL,lease_token=NULL FROM expired WHERE j.id=expired.id`, limit)
 	if e != nil {
 		return 0, fmt.Errorf("recover expired jobs: %w", e)
 	}
@@ -266,13 +267,16 @@ func (r *Repository) fence(ctx context.Context, lease Lease, query string) error
 }
 func sanitize(code, msg string) (string, string) {
 	code = strings.TrimSpace(code)
+	msg = strings.TrimSpace(msg)
+	if containsSensitiveValue(code) || containsSensitiveValue(msg) {
+		return "internal_error", "job failed"
+	}
 	if code == "" {
 		code = "internal_error"
 	}
 	if len(code) > 64 {
 		code = code[:64]
 	}
-	msg = strings.TrimSpace(msg)
 	if msg == "" {
 		msg = "job failed"
 	}
@@ -280,6 +284,16 @@ func sanitize(code, msg string) (string, string) {
 		msg = msg[:256]
 	}
 	return code, msg
+}
+
+func containsSensitiveValue(value string) bool {
+	value = strings.ToLower(value)
+	for _, marker := range []string{"authorization", "bearer", "token", "secret", "password", "credential", "api_key", "sentinel"} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // RunReceipt commits the receipt and a DB-only handler effect in one transaction.
@@ -324,6 +338,8 @@ type WorkerConfig struct {
 	WorkerID                     string
 	PollInterval, LeaseDuration  time.Duration
 	DispatchBatch, RecoveryBatch int
+	// RetryJitter may be injected for deterministic tests. Nil uses bounded random jitter.
+	RetryJitter func(time.Duration) time.Duration
 }
 
 type Worker struct {
@@ -400,24 +416,39 @@ func (w *Worker) handle(ctx context.Context, lease Lease) error {
 	if !errors.As(err, &typed) {
 		typed = &JobError{Class: Transient, Code: "internal_error", Message: "job handler failed", Cause: err}
 	}
-	delay := retryDelay(lease.Job.Attempts, typed.RetryAfter)
+	delay := retryDelay(lease.Job.Attempts, typed.RetryAfter, w.config.RetryJitter)
 	return w.repository.Reschedule(ctx, lease, typed, delay)
 }
 
-func retryDelay(attempts int, retryAfter *time.Duration) time.Duration {
-	// The no-jitter default is deterministic and still avoids a busy retry loop.
+const maxRetryDelay = time.Minute
+
+func retryDelay(attempts int, retryAfter *time.Duration, jitter func(time.Duration) time.Duration) time.Duration {
 	delay := time.Second
-	for i := 1; i < attempts && delay < time.Minute; i++ {
+	for i := 1; i < attempts && delay < maxRetryDelay; i++ {
 		delay *= 2
 	}
-	if delay > time.Minute {
-		delay = time.Minute
+	if delay > maxRetryDelay {
+		delay = maxRetryDelay
 	}
 	if retryAfter != nil && *retryAfter > delay {
 		delay = *retryAfter
-		if delay > time.Minute {
-			delay = time.Minute
+		if delay > maxRetryDelay {
+			delay = maxRetryDelay
 		}
 	}
-	return delay
+	maxJitter := min(delay/4, maxRetryDelay-delay)
+	if maxJitter <= 0 {
+		return delay
+	}
+	if jitter == nil {
+		jitter = func(limit time.Duration) time.Duration { return time.Duration(rand.Int64N(int64(limit) + 1)) }
+	}
+	addition := jitter(maxJitter)
+	if addition < 0 {
+		addition = 0
+	}
+	if addition > maxJitter {
+		addition = maxJitter
+	}
+	return delay + addition
 }

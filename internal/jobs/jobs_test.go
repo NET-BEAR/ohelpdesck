@@ -78,6 +78,10 @@ func TestJobErrorAndSanitize(t *testing.T) {
 	if len(code) != 64 || len(message) != 256 {
 		t.Fatalf("lengths = %d, %d", len(code), len(message))
 	}
+	code, message = sanitize("provider_token_sentinel", "Bearer secret-sentinel")
+	if code != "internal_error" || message != "job failed" {
+		t.Fatalf("sensitive values persisted as %q, %q", code, message)
+	}
 }
 
 func TestRetryDelayCapsAndRespectsLongerProviderHint(t *testing.T) {
@@ -97,10 +101,24 @@ func TestRetryDelayCapsAndRespectsLongerProviderHint(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := retryDelay(tc.attempts, tc.retryAfter); got != tc.want {
+			if got := retryDelay(tc.attempts, tc.retryAfter, func(time.Duration) time.Duration { return 0 }); got != tc.want {
 				t.Fatalf("retryDelay = %s, want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRetryDelayAddsBoundedInjectableJitter(t *testing.T) {
+	var received time.Duration
+	jitter := func(limit time.Duration) time.Duration {
+		received = limit
+		return limit + time.Second
+	}
+	if got := retryDelay(1, nil, jitter); got != 1250*time.Millisecond || received != 250*time.Millisecond {
+		t.Fatalf("retry delay=%s jitter limit=%s", got, received)
+	}
+	if got := retryDelay(10, nil, jitter); got != maxRetryDelay {
+		t.Fatalf("capped retry delay=%s", got)
 	}
 }
 

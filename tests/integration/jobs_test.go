@@ -764,4 +764,49 @@ func TestJobsSanitizesBlankFailureAndLeaseExtensionFencing(t *testing.T) {
 	if err = repo.Complete(ctx, *fresh); err != nil {
 		t.Fatal(err)
 	}
+
+	secretID := insertJob(t, ctx, pool, 1)
+	secretLease, err := repo.Claim(ctx, "redaction-worker", time.Minute)
+	if err != nil || secretLease == nil || secretLease.Job.ID != secretID {
+		t.Fatalf("redaction claim=%+v err=%v", secretLease, err)
+	}
+	if err = repo.Reschedule(ctx, *secretLease, &jobs.JobError{Class: jobs.Transient, Code: "token-sentinel", Message: "Authorization: Bearer credential-sentinel"}, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT last_error_code,last_error_message FROM jobs WHERE id=$1`, secretID).Scan(&code, &message); err != nil {
+		t.Fatal(err)
+	}
+	if code != "internal_error" || message != "job failed" || strings.Contains(strings.ToLower(code+message), "sentinel") {
+		t.Fatalf("persisted sensitive error code=%q message=%q", code, message)
+	}
+}
+
+func TestJobsRecoveryExhaustedLeaseMarksDeadAndNeverReclaims(t *testing.T) {
+	ctx, pool := jobsFixture(t)
+	repo := jobs.NewRepository(pool)
+	id := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO jobs(id,type,handler,max_attempts) VALUES($1,'domain_event','recovery.exhausted',1)`, id); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := repo.Claim(ctx, "worker-exhausted", time.Minute)
+	if err != nil || lease == nil || lease.Job.ID != id || lease.Job.Attempts != 1 {
+		t.Fatalf("initial claim=%+v err=%v", lease, err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE jobs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := repo.RecoverExpired(ctx, 10); err != nil || recovered != 1 {
+		t.Fatalf("recovery=%d err=%v", recovered, err)
+	}
+	var status jobs.Status
+	var attempts int
+	if err = pool.QueryRow(ctx, `SELECT status,attempts FROM jobs WHERE id=$1`, id).Scan(&status, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if status != jobs.Dead || attempts != 1 {
+		t.Fatalf("recovered status=%s attempts=%d", status, attempts)
+	}
+	if next, err := repo.Claim(ctx, "worker-next", time.Minute); err != nil || next != nil {
+		t.Fatalf("exhausted job reclaimed=%+v err=%v", next, err)
+	}
 }
