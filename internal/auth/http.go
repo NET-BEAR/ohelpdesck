@@ -26,6 +26,7 @@ type HTTPHandler struct {
 	metrics       *telemetry.Metrics
 	log           *slog.Logger
 	conversations *core.ConversationService
+	outbound      *core.OutboundService
 }
 
 type Observability struct {
@@ -44,7 +45,15 @@ func NewOperatorHTTPHandler(repository *Repository, secureCookie bool, conversat
 	return newHTTPHandler(repository, secureCookie, conversations, observability...)
 }
 
-func newHTTPHandler(repository *Repository, secureCookie bool, conversations *core.ConversationService, observability ...Observability) http.Handler {
+// NewOperatorOutboundHTTPHandler mounts the authenticated queue boundary in
+// addition to operator conversation commands.
+func NewOperatorOutboundHTTPHandler(repository *Repository, secureCookie bool, conversations *core.ConversationService, outbound *core.OutboundService, observability ...Observability) http.Handler {
+	h := newHTTPHandler(repository, secureCookie, conversations, observability...)
+	h.outbound = outbound
+	return h
+}
+
+func newHTTPHandler(repository *Repository, secureCookie bool, conversations *core.ConversationService, observability ...Observability) *HTTPHandler {
 	h := &HTTPHandler{repository: repository, secureCookie: secureCookie, limiter: newLoginLimiter(5, 15*time.Minute), conversations: conversations}
 	if len(observability) > 0 {
 		h.metrics, h.log = observability[0].Metrics, observability[0].Log
@@ -71,6 +80,8 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case strings.HasPrefix(r.URL.Path, "/api/v1/conversations/") && r.Method == http.MethodPatch:
 		h.conversationCommand(w, r)
+	case strings.HasPrefix(r.URL.Path, "/api/v1/conversations/") && r.Method == http.MethodPost:
+		h.queueOutbound(w, r)
 	case r.URL.Path == "/api/v1/me" && r.Method == http.MethodGet:
 		principal, _, ok := h.authenticate(w, r, false)
 		if !ok {

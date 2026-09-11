@@ -226,6 +226,30 @@ paths:
         '403': {description: "Invalid CSRF, missing conversation.reply or Channel can_reply membership", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '409': {description: Stale expected_version, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/conversations/{id}/messages:
+    post:
+      operationId: queueOutboundMessage
+      security: [{SessionCookie: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QueueOutboundMessageRequest'}
+      responses:
+        '201': {description: Queued outbound Message created, content: {application/json: {schema: {$ref: '#/components/schemas/OutboundMessage'}}}}
+        '200': {description: Canonical Message returned for an equivalent retry, content: {application/json: {schema: {$ref: '#/components/schemas/OutboundMessage'}}}}
+        '400': {description: Invalid JSON, missing Idempotency-Key or empty content, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Invalid CSRF, missing conversation.reply or Channel can_reply membership, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '409': {description: Idempotency key was reused with a different request, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
 components:
   securitySchemes:
     SessionCookie:
@@ -233,6 +257,11 @@ components:
       in: cookie
       name: ohelpdesck_session
   parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 255}
     CSRFToken:
       name: X-CSRF-Token
       in: header
@@ -367,3 +396,27 @@ components:
       properties:
         expected_version: {type: integer, format: int64, minimum: 1}
         priority: {$ref: '#/components/schemas/ConversationPriority'}
+
+    MessageStatus:
+      type: string
+      enum: [queued, sent, failed]
+    QueueOutboundMessageRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        text: {type: string, maxLength: 65535}
+        html: {type: string, maxLength: 65535}
+        reply_to_message_id: {type: string, format: uuid}
+      anyOf:
+        - required: [text]
+        - required: [html]
+    OutboundMessage:
+      type: object
+      additionalProperties: false
+      required: [id, conversation_id, channel_id, status, duplicate]
+      properties:
+        id: {type: string, format: uuid}
+        conversation_id: {type: string, format: uuid}
+        channel_id: {type: string, format: uuid}
+        status: {$ref: '#/components/schemas/MessageStatus'}
+        duplicate: {type: boolean}

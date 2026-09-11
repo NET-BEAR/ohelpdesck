@@ -170,7 +170,7 @@ func TestOperatorConversationHTTPRejectsUnconfiguredServiceAndSupportsCSRFPrefli
 	preflight.Header.Set("Origin", "https://operator.example.test")
 	response := httptest.NewRecorder()
 	application.ServeHTTP(response, preflight)
-	if response.Code != http.StatusNoContent || response.Header().Get("Access-Control-Allow-Methods") != "GET, POST, PATCH, OPTIONS" || response.Header().Get("Access-Control-Allow-Headers") != "Content-Type, X-Request-ID, X-CSRF-Token" {
+	if response.Code != http.StatusNoContent || response.Header().Get("Access-Control-Allow-Methods") != "GET, POST, PATCH, OPTIONS" || response.Header().Get("Access-Control-Allow-Headers") != "Content-Type, X-Request-ID, X-CSRF-Token, Idempotency-Key" {
 		t.Fatalf("preflight status=%d methods=%q headers=%q", response.Code, response.Header().Get("Access-Control-Allow-Methods"), response.Header().Get("Access-Control-Allow-Headers"))
 	}
 }
