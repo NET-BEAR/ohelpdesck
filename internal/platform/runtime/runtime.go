@@ -59,7 +59,7 @@ func Run(ctx context.Context, worker bool) error {
 	if e != nil {
 		return e
 	}
-	metrics := telemetry.NewMetrics(func() float64 { return float64(db.Stat().AcquiredConns()) }, func() float64 { return float64(db.Stat().IdleConns()) })
+	metrics := telemetry.NewMetrics(func() float64 { return float64(db.Stat().AcquiredConns()) }, func() float64 { return float64(db.Stat().IdleConns()) }, jobs.NewMetricsReader(db))
 	servers := []*http.Server{{Addr: c.MetricsAddress, Handler: metrics.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: c.ReadTimeout, WriteTimeout: c.WriteTimeout, IdleTimeout: c.IdleTimeout}}
 	var workerLoop *jobs.Worker
 	if worker {
