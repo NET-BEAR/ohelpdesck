@@ -252,3 +252,102 @@ func TestQueueOutboundHTTPRequiresCSRFAndReturnsCanonicalRetry(t *testing.T) {
 		t.Fatalf("conflict=%d", got)
 	}
 }
+
+func TestOutboundValidationFailureAndQueuedFailurePreserveWaiting(t *testing.T) {
+	ctx, pool, _, inbound, userID := outboundFixture(t)
+	service := core.NewOutboundService(pool)
+	for _, command := range []core.QueueOutboundCommand{
+		{},
+		{ConversationID: inbound.ConversationID, ActorID: userID, Text: "", HTML: "", IdempotencyKey: "empty"},
+		{ConversationID: inbound.ConversationID, ActorID: userID, Text: "body", IdempotencyKey: " "},
+		{ConversationID: uuid.New(), ActorID: userID, Text: "body", IdempotencyKey: "missing-" + uuid.NewString()},
+		{ConversationID: inbound.ConversationID, ActorID: userID, Text: "body", ReplyToMessageID: ptrUUID(uuid.New()), IdempotencyKey: "reply-" + uuid.NewString()},
+	} {
+		if _, err := service.QueueOutbound(ctx, command); !errors.Is(err, core.ErrInvalidOutbound) && !errors.Is(err, core.ErrConversationNotFound) {
+			t.Fatalf("command=%+v error=%v", command, err)
+		}
+	}
+	queued, err := service.QueueOutbound(ctx, core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: userID, Text: "will fail", IdempotencyKey: "failed-" + uuid.NewString()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.MarkFailed(ctx, core.MarkMessageFailedCommand{MessageID: queued.ID, ErrorCode: "temporary", ErrorMessage: "provider unavailable"}); err != nil {
+		t.Fatal(err)
+	}
+	var status core.MessageStatus
+	var waiting *time.Time
+	var eventType string
+	if err := pool.QueryRow(ctx, `SELECT m.status,c.waiting_since,(SELECT event_type FROM outbox_events WHERE aggregate_id=m.id ORDER BY created_at DESC LIMIT 1) FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.id=$1`, queued.ID).Scan(&status, &waiting, &eventType); err != nil {
+		t.Fatal(err)
+	}
+	if status != core.MessageFailed || waiting == nil || eventType != "message.failed" {
+		t.Fatalf("status=%s waiting=%v event=%q", status, waiting, eventType)
+	}
+	if err := service.MarkSent(ctx, core.MarkMessageSentCommand{MessageID: queued.ID}); !errors.Is(err, core.ErrInvalidMessageTransition) {
+		t.Fatalf("sent failed message error=%v", err)
+	}
+	if err := service.MarkSent(ctx, core.MarkMessageSentCommand{MessageID: uuid.New()}); !errors.Is(err, core.ErrMessageNotFound) {
+		t.Fatalf("missing sent error=%v", err)
+	}
+	if err := service.MarkFailed(ctx, core.MarkMessageFailedCommand{MessageID: uuid.New(), ErrorCode: "missing"}); !errors.Is(err, core.ErrMessageNotFound) {
+		t.Fatalf("missing failed error=%v", err)
+	}
+	if err := service.MarkFailed(ctx, core.MarkMessageFailedCommand{MessageID: queued.ID}); !errors.Is(err, core.ErrInvalidOutbound) {
+		t.Fatalf("blank failure code error=%v", err)
+	}
+}
+
+func TestQueueOutboundHTTPValidationAndAuthorizationFailures(t *testing.T) {
+	ctx, pool, channelID, inbound, userID := outboundFixture(t)
+	repository := auth.NewRepository(pool)
+	session, csrf, err := repository.CreateSession(ctx, userID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := auth.NewOperatorOutboundHTTPHandler(repository, false, core.NewConversationService(pool), core.NewOutboundService(pool))
+	request := func(path, body, key string, sessionCookie, csrfHeader bool) int {
+		r := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+		if sessionCookie {
+			r.AddCookie(&http.Cookie{Name: "ohelpdesck_session", Value: session})
+		}
+		if key != "" {
+			r.Header.Set("Idempotency-Key", key)
+		}
+		if csrfHeader {
+			r.Header.Set("X-CSRF-Token", csrf)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	path := "/api/v1/conversations/" + inbound.ConversationID.String() + "/messages"
+	if got := request(path, `{"text":"body"}`, "key", false, false); got != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated=%d", got)
+	}
+	if got := request("/api/v1/conversations/not-a-uuid/messages", `{"text":"body"}`, "key", true, true); got != http.StatusBadRequest {
+		t.Fatalf("invalid id=%d", got)
+	}
+	if got := request(path, `{"text":"body"}`, "", true, true); got != http.StatusBadRequest {
+		t.Fatalf("missing key=%d", got)
+	}
+	if got := request(path, `{"text":" "}`, "empty-"+uuid.NewString(), true, true); got != http.StatusBadRequest {
+		t.Fatalf("empty content=%d", got)
+	}
+	if got := request("/api/v1/conversations/"+uuid.NewString()+"/messages", `{"text":"body"}`, "missing-"+uuid.NewString(), true, true); got != http.StatusNotFound {
+		t.Fatalf("missing conversation=%d", got)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE channel_memberships SET can_reply=false WHERE channel_id=$1 AND user_id=$2`, channelID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if got := request(path, `{"text":"body"}`, "forbidden-"+uuid.NewString(), true, true); got != http.StatusForbidden {
+		t.Fatalf("missing membership=%d", got)
+	}
+	missing := auth.NewOperatorHTTPHandler(repository, false, core.NewConversationService(pool))
+	w := httptest.NewRecorder()
+	missing.ServeHTTP(w, httptest.NewRequest(http.MethodPost, path, nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("unconfigured outbound=%d", w.Code)
+	}
+}
+
+func ptrUUID(value uuid.UUID) *uuid.UUID { return &value }
