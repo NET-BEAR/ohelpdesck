@@ -351,3 +351,83 @@ func TestQueueOutboundHTTPValidationAndAuthorizationFailures(t *testing.T) {
 }
 
 func ptrUUID(value uuid.UUID) *uuid.UUID { return &value }
+
+func TestQueueOutboundSupportsReplyTargetAndContentVariants(t *testing.T) {
+	ctx, pool, _, inbound, userID := outboundFixture(t)
+	service := core.NewOutboundService(pool)
+	replied, err := service.QueueOutbound(ctx, core.QueueOutboundCommand{
+		ConversationID: inbound.ConversationID, ActorID: userID, HTML: "<p>reply</p>", ReplyToMessageID: ptrUUID(inbound.MessageID), IdempotencyKey: "html-" + uuid.NewString(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mixed, err := service.QueueOutbound(ctx, core.QueueOutboundCommand{
+		ConversationID: inbound.ConversationID, ActorID: userID, Text: "plain", HTML: "<p>plain</p>", IdempotencyKey: "mixed-" + uuid.NewString(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var htmlType, mixedType string
+	var replyTo *uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT content_type,reply_to_message_id FROM messages WHERE id=$1`, replied.ID).Scan(&htmlType, &replyTo); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT content_type FROM messages WHERE id=$1`, mixed.ID).Scan(&mixedType); err != nil {
+		t.Fatal(err)
+	}
+	if htmlType != string(core.ContentHTML) || replyTo == nil || *replyTo != inbound.MessageID || mixedType != string(core.ContentMixed) {
+		t.Fatalf("html_type=%q reply_to=%v mixed_type=%q", htmlType, replyTo, mixedType)
+	}
+	var nilService *core.OutboundService
+	if _, err := nilService.QueueOutbound(ctx, core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: userID, Text: "body", IdempotencyKey: "nil"}); !errors.Is(err, core.ErrInvalidOutbound) {
+		t.Fatalf("nil queue error=%v", err)
+	}
+}
+
+func TestOutboundTransitionRejectsNonAgentAndRollsBackOutboxFailure(t *testing.T) {
+	ctx, pool, _, inbound, userID := outboundFixture(t)
+	service := core.NewOutboundService(pool)
+	if err := service.MarkSent(ctx, core.MarkMessageSentCommand{MessageID: inbound.MessageID}); !errors.Is(err, core.ErrInvalidMessageTransition) {
+		t.Fatalf("incoming transition error=%v", err)
+	}
+	var nilService *core.OutboundService
+	if err := nilService.MarkSent(ctx, core.MarkMessageSentCommand{MessageID: uuid.New()}); !errors.Is(err, core.ErrMessageNotFound) {
+		t.Fatalf("nil sent error=%v", err)
+	}
+	if err := nilService.MarkFailed(ctx, core.MarkMessageFailedCommand{MessageID: uuid.New(), ErrorCode: "x"}); !errors.Is(err, core.ErrMessageNotFound) {
+		t.Fatalf("nil failed error=%v", err)
+	}
+	queued, err := service.QueueOutbound(ctx, core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: userID, Text: "rollback sent", IdempotencyKey: "rollback-sent-" + uuid.NewString()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing := core.NewOutboundService(pool, outboundFailingAppender{})
+	if err := failing.MarkSent(ctx, core.MarkMessageSentCommand{MessageID: queued.ID}); err == nil || err.Error() != "injected outbound outbox failure" {
+		t.Fatalf("mark sent outbox error=%v", err)
+	}
+	var status core.MessageStatus
+	if err := pool.QueryRow(ctx, `SELECT status FROM messages WHERE id=$1`, queued.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != core.MessageQueued {
+		t.Fatalf("outbox failure persisted status=%s", status)
+	}
+	if err := service.MarkSent(ctx, core.MarkMessageSentCommand{MessageID: queued.ID}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.QueueOutbound(ctx, core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: userID, Text: "no waiting", IdempotencyKey: "no-waiting-" + uuid.NewString()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.MarkSent(ctx, core.MarkMessageSentCommand{MessageID: second.ID}); err != nil {
+		t.Fatal(err)
+	}
+	var waiting *time.Time
+	var firstResponse *time.Time
+	if err := pool.QueryRow(ctx, `SELECT waiting_since,first_response_at FROM conversations WHERE id=$1`, inbound.ConversationID).Scan(&waiting, &firstResponse); err != nil {
+		t.Fatal(err)
+	}
+	if waiting != nil || firstResponse == nil {
+		t.Fatalf("second sent changed closed episode waiting=%v first_response=%v", waiting, firstResponse)
+	}
+}
