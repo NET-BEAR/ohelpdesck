@@ -145,6 +145,11 @@ func TestAdministrationBundlesAndSessionFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The integration database is shared across scenarios. This assertion needs
+	// an explicit single-administrator precondition, independent of test order.
+	if _, err := pool.Exec(ctx, `UPDATE users SET status='disabled' WHERE role='administrator' AND status='active' AND id<>$1`, admin.ID); err != nil {
+		t.Fatal(err)
+	}
 	defer func() {
 		_, _ = pool.Exec(context.Background(), "DELETE FROM users WHERE login LIKE $1", prefix+"%")
 		_, _ = pool.Exec(context.Background(), "DELETE FROM permission_bundles WHERE name LIKE $1", prefix+"%")
