@@ -160,4 +160,12 @@ func TestChannelServiceRejectsStoredCredentialTampering(t *testing.T) {
 	if _, err := service.Credentials(ctx, uuid.NewString()); !errors.Is(err, channels.ErrNotFound) {
 		t.Fatalf("missing credential error=%v", err)
 	}
+	missing := uuid.NewString()
+	name := "missing channel"
+	if _, err := service.Patch(ctx, audit, missing, channels.PatchInput{Name: &name}); !errors.Is(err, channels.ErrNotFound) {
+		t.Fatalf("missing patch error=%v", err)
+	}
+	if _, err := service.Enable(ctx, audit, missing); !errors.Is(err, channels.ErrNotFound) {
+		t.Fatalf("missing enable error=%v", err)
+	}
 }
