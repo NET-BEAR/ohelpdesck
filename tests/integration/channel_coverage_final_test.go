@@ -34,6 +34,9 @@ func TestChannelCryptoAndRegistryFailClosedAtTrustBoundaries(t *testing.T) {
 			t.Fatalf("invalid cipher setup accepted key_id=%q len=%d", input.keyID, len(input.key))
 		}
 	}
+	if _, err := channels.NewKeyring("active", key, map[string][]byte{"prior": key[:31]}); err == nil {
+		t.Fatal("keyring accepted an invalid prior rotation key")
+	}
 	sealed, metadata, err := cipher.Seal("11111111-1111-1111-1111-111111111111", channels.TypeTelegramBot, []byte(`{"token":"final-secret"}`))
 	if err != nil {
 		t.Fatal(err)
