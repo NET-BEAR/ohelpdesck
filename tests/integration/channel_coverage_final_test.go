@@ -171,4 +171,10 @@ func TestChannelServiceRejectsStoredCredentialTampering(t *testing.T) {
 	if _, err := service.Enable(ctx, audit, missing); !errors.Is(err, channels.ErrNotFound) {
 		t.Fatalf("missing enable error=%v", err)
 	}
+	if _, err := service.Validate(ctx, audit, missing); !errors.Is(err, channels.ErrNotFound) {
+		t.Fatalf("missing validation error=%v", err)
+	}
+	if _, err := service.ReencryptCredentials(ctx, audit, missing); !errors.Is(err, channels.ErrNotFound) {
+		t.Fatalf("missing reencrypt error=%v", err)
+	}
 }
