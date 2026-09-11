@@ -49,6 +49,12 @@ func cleanupCoreChannel(t *testing.T, pool *database.Pool, channelID uuid.UUID) 
 	if _, err := pool.Exec(ctx, `DELETE FROM outbox_events WHERE aggregate_id IN (SELECT id FROM messages WHERE channel_id=$1) OR aggregate_id IN (SELECT id FROM conversations WHERE channel_id=$1)`, channelID); err != nil {
 		t.Error(err)
 	}
+	// A sent reply may be recorded as the closure of the current waiting
+	// episode. Clear that foreign-key reference before fixture teardown deletes
+	// its Message.
+	if _, err := pool.Exec(ctx, `UPDATE conversations SET waiting_closed_by_message_id=NULL,waiting_closed_since=NULL WHERE channel_id=$1`, channelID); err != nil {
+		t.Error(err)
+	}
 	if _, err := pool.Exec(ctx, `DELETE FROM messages WHERE channel_id=$1`, channelID); err != nil {
 		t.Error(err)
 	}

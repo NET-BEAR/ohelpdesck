@@ -40,9 +40,9 @@ func TestFoundation(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		want := 4
-		if d == "down" || (d == "status" && v == 3) {
-			want = 3
+		want := 5
+		if d == "down" || (d == "status" && v == 4) {
+			want = 4
 		}
 		if (d == "up" || d == "status" && v != 0) && v != want {
 			t.Fatalf("migration %s: got %d want %d", d, v, want)
