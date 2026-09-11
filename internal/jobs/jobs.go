@@ -265,35 +265,29 @@ func (r *Repository) fence(ctx context.Context, lease Lease, query string) error
 	}
 	return nil
 }
-func sanitize(code, msg string) (string, string) {
-	code = strings.TrimSpace(code)
-	msg = strings.TrimSpace(msg)
-	if containsSensitiveValue(code) || containsSensitiveValue(msg) {
-		return "internal_error", "job failed"
-	}
-	if code == "" {
-		code = "internal_error"
-	}
-	if len(code) > 64 {
-		code = code[:64]
-	}
-	if msg == "" {
-		msg = "job failed"
-	}
-	if len(msg) > 256 {
-		msg = msg[:256]
-	}
-	return code, msg
+
+type persistedFailure struct {
+	code, message string
 }
 
-func containsSensitiveValue(value string) bool {
-	value = strings.ToLower(value)
-	for _, marker := range []string{"authorization", "bearer", "token", "secret", "password", "credential", "api_key", "sentinel"} {
-		if strings.Contains(value, marker) {
-			return true
-		}
+// persistedFailures is deliberately closed: handlers may use arbitrary error
+// text internally, but neither it nor their raw code crosses into durable state.
+var persistedFailures = map[string]persistedFailure{
+	"internal_error":  {code: "internal_error", message: "job failed"},
+	"unknown_handler": {code: "unknown_handler", message: "job handler unavailable"},
+	"retry":           {code: "retry", message: "job retry scheduled"},
+	"exhausted":       {code: "exhausted", message: "job retry exhausted"},
+	"rejected":        {code: "rejected", message: "job rejected"},
+	"upstream_busy":   {code: "upstream_busy", message: "job temporarily unavailable"},
+	"transient":       {code: "transient", message: "job failed"},
+}
+
+func sanitize(code, _ string) (string, string) {
+	if persisted, ok := persistedFailures[strings.TrimSpace(code)]; ok {
+		return persisted.code, persisted.message
 	}
-	return false
+	fallback := persistedFailures["internal_error"]
+	return fallback.code, fallback.message
 }
 
 // RunReceipt commits the receipt and a DB-only handler effect in one transaction.

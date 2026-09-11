@@ -70,17 +70,13 @@ func TestJobErrorAndSanitize(t *testing.T) {
 	if got := (&JobError{Message: "retry later"}).Error(); got != "retry later" {
 		t.Fatalf("error = %q", got)
 	}
-	code, message := sanitize("  ", "\t")
-	if code != "internal_error" || message != "job failed" {
-		t.Fatalf("defaults = %q, %q", code, message)
+	code, message := sanitize("retry", "untrusted raw handler text")
+	if code != "retry" || message != "job retry scheduled" {
+		t.Fatalf("mapped values = %q, %q", code, message)
 	}
-	code, message = sanitize(string(make([]byte, 70)), string(make([]byte, 270)))
-	if len(code) != 64 || len(message) != 256 {
-		t.Fatalf("lengths = %d, %d", len(code), len(message))
-	}
-	code, message = sanitize("provider_token_sentinel", "Bearer secret-sentinel")
+	code, message = sanitize("a7E9K2mQ4vX8pL3r", "Z9dQ7xP2mK5vR8sT")
 	if code != "internal_error" || message != "job failed" {
-		t.Fatalf("sensitive values persisted as %q, %q", code, message)
+		t.Fatalf("opaque values persisted as %q, %q", code, message)
 	}
 }
 

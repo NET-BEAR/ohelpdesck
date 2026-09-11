@@ -211,7 +211,7 @@ func TestJobsRetryDeadAndReceiptDeduplication(t *testing.T) {
 	}
 	var status jobs.Status
 	var code, msg string
-	if err = pool.QueryRow(ctx, `SELECT status,last_error_code,last_error_message FROM jobs WHERE id=$1`, id).Scan(&status, &code, &msg); err != nil || status != jobs.Dead || code != "exhausted" || msg != "will be dead" {
+	if err = pool.QueryRow(ctx, `SELECT status,last_error_code,last_error_message FROM jobs WHERE id=$1`, id).Scan(&status, &code, &msg); err != nil || status != jobs.Dead || code != "exhausted" || msg != "job retry exhausted" {
 		t.Fatalf("status=%s code=%s msg=%s err=%v", status, code, msg, err)
 	}
 }
@@ -272,7 +272,7 @@ func TestJobsRepositoryLeaseOperationsAndFailurePolicies(t *testing.T) {
 	if err = pool.QueryRow(ctx, `SELECT status,last_error_code,last_error_message FROM jobs WHERE id=$1`, id).Scan(&status, &code, &message); err != nil {
 		t.Fatal(err)
 	}
-	if status != jobs.Pending || len(code) != 64 || len(message) != 256 {
+	if status != jobs.Pending || code != "internal_error" || message != "job failed" {
 		t.Fatalf("rescheduled status=%s code=%d message=%d", status, len(code), len(message))
 	}
 	if err = repo.Complete(ctx, *lease); !errors.Is(err, jobs.ErrStaleJobLease) {
@@ -770,13 +770,13 @@ func TestJobsSanitizesBlankFailureAndLeaseExtensionFencing(t *testing.T) {
 	if err != nil || secretLease == nil || secretLease.Job.ID != secretID {
 		t.Fatalf("redaction claim=%+v err=%v", secretLease, err)
 	}
-	if err = repo.Reschedule(ctx, *secretLease, &jobs.JobError{Class: jobs.Transient, Code: "token-sentinel", Message: "Authorization: Bearer credential-sentinel"}, time.Second); err != nil {
+	if err = repo.Reschedule(ctx, *secretLease, &jobs.JobError{Class: jobs.Transient, Code: "A7q9M2xV4kL8rP3z", Message: "Z8v2Q5mR9xK4pL7t", Cause: errors.New("N6s1D8yW3cF5hJ0b")}, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if err = pool.QueryRow(ctx, `SELECT last_error_code,last_error_message FROM jobs WHERE id=$1`, secretID).Scan(&code, &message); err != nil {
 		t.Fatal(err)
 	}
-	if code != "internal_error" || message != "job failed" || strings.Contains(strings.ToLower(code+message), "sentinel") {
+	if code != "internal_error" || message != "job failed" || strings.Contains(strings.ToLower(code+message), "a7q9m2xv4kl8rp3z") || strings.Contains(strings.ToLower(code+message), "z8v2q5mr9xk4pl7t") || strings.Contains(strings.ToLower(code+message), "n6s1d8yw3cf5hj0b") {
 		t.Fatalf("persisted sensitive error code=%q message=%q", code, message)
 	}
 }
