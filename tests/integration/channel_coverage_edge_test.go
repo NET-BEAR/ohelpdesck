@@ -53,7 +53,10 @@ func TestChannelCredentialRotationReadsPriorKeyAndRejectsRetiredWriter(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM channels WHERE id=$1`, created.ID) })
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM channel_audit_events WHERE channel_id=$1`, created.ID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM channels WHERE id=$1`, created.ID)
+	})
 
 	newRing, err := channels.NewKeyring("new", newKey, map[string][]byte{"old": oldKey})
 	if err != nil {
@@ -117,7 +120,10 @@ func TestChannelServiceRejectsInvalidPatchAndPreservesStaleConfig(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM channels WHERE id=$1`, created.ID) })
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM channel_audit_events WHERE channel_id=$1`, created.ID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM channels WHERE id=$1`, created.ID)
+	})
 
 	blank := " \t"
 	invalidConfig := json.RawMessage(`[]`)

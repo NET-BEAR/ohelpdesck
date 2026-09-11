@@ -131,7 +131,10 @@ func TestChannelServiceRejectsStoredCredentialTampering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM channels WHERE id=$1`, created.ID) })
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM channel_audit_events WHERE channel_id=$1`, created.ID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM channels WHERE id=$1`, created.ID)
+	})
 	if plain, err := service.Credentials(ctx, created.ID); err != nil || !bytes.Contains(plain, []byte("tamper-secret")) {
 		t.Fatalf("baseline credentials=%q err=%v", plain, err)
 	}
