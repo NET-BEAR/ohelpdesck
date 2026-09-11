@@ -25,7 +25,7 @@ func (outboundFailingAppender) Append(context.Context, pgx.Tx, ...outbox.Event) 
 	return errors.New("injected outbound outbox failure")
 }
 
-func outboundFixture(t *testing.T) (context.Context, *database.Pool, uuid.UUID, core.ReceiveResult, auth.User) {
+func outboundFixture(t *testing.T) (context.Context, *database.Pool, uuid.UUID, core.ReceiveResult, uuid.UUID) {
 	t.Helper()
 	requireCoreDatabase(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -52,10 +52,14 @@ func outboundFixture(t *testing.T) (context.Context, *database.Pool, uuid.UUID, 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, user.ID) })
-	if _, err := pool.Exec(ctx, `INSERT INTO channel_memberships(channel_id,user_id,can_read,can_reply) VALUES($1,$2,true,true)`, channelID, user.ID); err != nil {
+	userID, err := uuid.Parse(user.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return ctx, pool, channelID, inbound, user
+	if _, err := pool.Exec(ctx, `INSERT INTO channel_memberships(channel_id,user_id,can_read,can_reply) VALUES($1,$2,true,true)`, channelID, userID); err != nil {
+		t.Fatal(err)
+	}
+	return ctx, pool, channelID, inbound, userID
 }
 
 func TestQueueOutboundIdempotencyAndMembership(t *testing.T) {
@@ -218,7 +222,7 @@ func TestOutboundRejectsInvalidTransitionAndRollsBackOutboxFailure(t *testing.T)
 func TestQueueOutboundHTTPRequiresCSRFAndReturnsCanonicalRetry(t *testing.T) {
 	ctx, pool, _, inbound, user := outboundFixture(t)
 	repository := auth.NewRepository(pool)
-	session, csrf, err := repository.CreateSession(ctx, user.ID)
+	session, csrf, err := repository.CreateSession(ctx, user.ID.String())
 	if err != nil {
 		t.Fatal(err)
 	}
