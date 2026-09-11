@@ -59,7 +59,7 @@ services:
     volumes: [minio-data:/data]
     restart: unless-stopped
   minio-init:
-    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     entrypoint: [/bin/sh, -ec]
     command:
       - |
