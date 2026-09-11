@@ -21,7 +21,25 @@ import (
 	"time"
 )
 
+// WorkerRegistration supplies durable handlers for an isolated worker runtime.
+// Production passes nil and receives the built-in empty registry until handlers
+// are registered by their owning integration slice.
+type WorkerRegistration func(*jobs.Registry) error
+
 func Run(ctx context.Context, worker bool) error {
+	return run(ctx, worker, nil)
+}
+
+// RunWorkerWithRegistry starts the actual worker runtime with an isolated
+// durable-job registry for process-level verification.
+func RunWorkerWithRegistry(ctx context.Context, register WorkerRegistration) error {
+	if register == nil {
+		return fmt.Errorf("worker registration is required")
+	}
+	return run(ctx, true, register)
+}
+
+func run(ctx context.Context, worker bool, register WorkerRegistration) error {
 	c, e := config.Load(os.Getenv)
 	if e != nil {
 		return e
@@ -68,6 +86,11 @@ func Run(ctx context.Context, worker bool) error {
 			host = "worker"
 		}
 		registry := jobs.NewRegistry()
+		if register != nil {
+			if err := register(registry); err != nil {
+				return err
+			}
+		}
 		workerLoop, e = jobs.NewWorker(jobs.NewDispatcher(db, registry), jobs.NewRepository(db), registry, jobs.WorkerConfig{WorkerID: fmt.Sprintf("%s:%d", host, os.Getpid()), PollInterval: time.Second, LeaseDuration: time.Minute, DispatchBatch: 32, RecoveryBatch: 32})
 		if e != nil {
 			return e
