@@ -174,3 +174,35 @@ func TestActualCollectorFailureRedaction(t *testing.T) {
 		}
 	}
 }
+
+type queueMetricsSourceFunc func(context.Context) (QueueMetricsSnapshot, error)
+
+func (f queueMetricsSourceFunc) QueueMetrics(ctx context.Context) (QueueMetricsSnapshot, error) {
+	return f(ctx)
+}
+
+func TestQueueMetricsCollector(t *testing.T) {
+	m := NewMetrics(func() float64 { return 0 }, func() float64 { return 0 }, queueMetricsSourceFunc(func(context.Context) (QueueMetricsSnapshot, error) {
+		return QueueMetricsSnapshot{OutboxUndispatched: 2, OutboxLagSeconds: 12, JobDepth: map[string]float64{"pending": 3, "dead": 1}}, nil
+	}))
+	w := httptest.NewRecorder()
+	m.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := w.Body.String()
+	for _, expected := range []string{"outbox_undispatched_events 2", "outbox_dispatch_lag_seconds 12", `job_queue_depth{status="pending"} 3`, `job_queue_depth{status="dead"} 1`, "queue_metrics_up 1"} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("metrics output missing %q: %s", expected, body)
+		}
+	}
+}
+
+func TestQueueMetricsCollectorFailure(t *testing.T) {
+	m := NewMetrics(func() float64 { return 0 }, func() float64 { return 0 }, queueMetricsSourceFunc(func(context.Context) (QueueMetricsSnapshot, error) {
+		return QueueMetricsSnapshot{}, errors.New("database unavailable")
+	}))
+	w := httptest.NewRecorder()
+	m.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := w.Body.String()
+	if !strings.Contains(body, "queue_metrics_up 0") || strings.Contains(body, "outbox_undispatched_events") {
+		t.Fatalf("unexpected failed metrics output: %s", body)
+	}
+}

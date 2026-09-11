@@ -48,7 +48,7 @@ type Metrics struct {
 	UserAdminChanges    *prometheus.CounterVec
 }
 
-func NewMetrics(acquired, idle func() float64) *Metrics {
+func NewMetrics(acquired, idle func() float64, queueSources ...QueueMetricsSource) *Metrics {
 	r := prometheus.NewRegistry()
 	m := &Metrics{
 		Registry:            r,
@@ -60,6 +60,11 @@ func NewMetrics(acquired, idle func() float64) *Metrics {
 		UserAdminChanges:    prometheus.NewCounterVec(prometheus.CounterOpts{Name: "user_admin_changes_total", Help: "User administration changes"}, []string{"operation"}),
 	}
 	r.MustRegister(m.Requests, m.Duration, m.AuthRequests, m.AuthFailures, m.AuthorizationDenied, m.UserAdminChanges, prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "db_pool_acquired_connections", Help: "Acquired connections"}, acquired), prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "db_pool_idle_connections", Help: "Idle connections"}, idle), prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "process_start_time_seconds", Help: "Process start"}, func() func() float64 { start := float64(time.Now().Unix()); return func() float64 { return start } }()))
+	for _, source := range queueSources {
+		if source != nil {
+			r.MustRegister(newQueueMetricsCollector(source))
+		}
+	}
 	return m
 }
 func (m *Metrics) Handler() http.Handler {
