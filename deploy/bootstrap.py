@@ -1,4 +1,5 @@
 """Generate local-only credentials without printing them or replacing existing values."""
+import base64
 import os
 import secrets
 from pathlib import Path
@@ -13,4 +14,5 @@ else:
         output.write(f"POSTGRES_PASSWORD={secrets.token_hex(24)}\n")
         output.write(f"S3_ACCESS_KEY={secrets.token_hex(12)}\n")
         output.write(f"S3_SECRET_KEY={secrets.token_hex(24)}\n")
+        output.write(f"CHANNEL_CREDENTIALS_AES256_KEY={base64.b64encode(secrets.token_bytes(32)).decode()}\n")
     print(f"Generated private development configuration: {target}")
