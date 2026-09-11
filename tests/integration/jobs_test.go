@@ -864,6 +864,25 @@ func TestJobsDispatcherRollbackLeavesOutboxUndispatched(t *testing.T) {
 	if jobsCount != 0 || dispatchedAt != nil {
 		t.Fatalf("partial fanout jobs=%d dispatched=%v", jobsCount, dispatchedAt)
 	}
+	if _, err := pool.Exec(ctx, `DROP TRIGGER jobs_test_fail_second_fanout ON jobs`); err != nil {
+		t.Fatal(err)
+	}
+	result, err := jobs.NewDispatcher(pool, r).DispatchBatch(ctx, 1)
+	if err != nil || result.Events != 1 || result.Jobs != 2 {
+		t.Fatalf("retry dispatch=%+v err=%v", result, err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE event_id=$1`, event).Scan(&jobsCount); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT dispatched_at FROM outbox_events WHERE id=$1`, event).Scan(&dispatchedAt); err != nil {
+		t.Fatal(err)
+	}
+	if jobsCount != 2 || dispatchedAt == nil {
+		t.Fatalf("retry fanout jobs=%d dispatched=%v", jobsCount, dispatchedAt)
+	}
+	if repeat, err := jobs.NewDispatcher(pool, r).DispatchBatch(ctx, 1); err != nil || repeat.Events != 0 || repeat.Jobs != 0 {
+		t.Fatalf("duplicate retry dispatch=%+v err=%v", repeat, err)
+	}
 }
 
 func TestJobsConcurrentRecoveryAndClaimRespectsLeaseBudget(t *testing.T) {
