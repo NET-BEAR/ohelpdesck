@@ -82,3 +82,29 @@ artifacts: `docs/ai_team/2026-09-11-spec-020-outbound-lifecycle/QA.md`
 evidence: release `43264b6903522df323611aa32c443686e27813f8`; remote migration version 5; targeted and full race PASS; coverage 83.68% statements / 80.32% executable lines; CI `34566347311`, delivery `34567101494`
 risks: QA-OUT-BUG-001; provider dispatch/retry/delivered/read remains intentionally out of scope.
 recommended_next_role: Разработчик для coverage rework, затем независимый Ревьювер и QA retest.
+
+## Ретест QA-OUT-BUG-001 — 2026-09-11
+
+Проверен delivered release
+`/opt/ohelpdesck-dev/releases/da93da3e5dfcc2a6e178511c544378f3c60d6bab`
+после successful workflow `34571326789` (verify/deploy-dev).
+
+- `migrate up` — exit `0`, `migration version: 5`.
+- `go test -count=1 -race ./tests/integration -run 'TestQueueOutbound|TestOutbound'` — exit `0`, PASS, 4.024 s.
+- Targeted coverage profile (`go test -count=1 -coverpkg=./... -coverprofile=outbound-coverage.out ./tests/integration -run 'TestQueueOutbound|TestOutbound'`) — exit `0`.
+- `go tool cover -func=outbound-coverage.out` выдал `QueueOutbound` **82.6%** и `transition` **75.0%**.
+
+Дополненные тесты улучшили покрытие `QueueOutbound` выше 80%, однако
+`transition` всё ещё ниже обязательного порога. Поэтому QA-OUT-BUG-001
+**не устранён**, вердикт отчёта сохраняется `REWORK`. Нужны ещё осмысленные
+сценарии для оставшихся ветвей `transition` и повторный remote retest.
+
+## Решение пользователя и финальный QA статус — 2026-09-11
+
+Пользователь подтвердил закрытие functional slice без DB adapter. Бизнес-ветви
+и общий quality gate приняты; низкоуровневые error-path PostgreSQL/clock остаются
+отдельным техническим follow-up, поскольку их детерминированное покрытие требует
+архитектурного adapter-а транзакций. После delivered SHA `b2ed0e1` и workflow
+`34576434582` remote targeted profile подтвердил `QueueOutbound` 82.6% и
+`transition` 75.0%; это limitation function-level метрики, а не неисполненный
+бизнес-сценарий. Вердикт: **PASS WITH FOLLOW-UP**.
