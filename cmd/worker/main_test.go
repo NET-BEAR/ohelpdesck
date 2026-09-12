@@ -133,6 +133,15 @@ func TestWorkerSIGTERMBoundedShutdownAndLeaseRecovery(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
+	var claimedStatus jobs.Status
+	if err = pool.QueryRow(ctx, `SELECT status FROM jobs WHERE event_id=$1 AND handler='worker.sigterm.blocked'`, eventID).Scan(&claimedStatus); err != nil || claimedStatus != jobs.Running {
+		t.Fatalf("handler-ready job status=%s err=%v", claimedStatus, err)
+	}
+	// Keep the known running lease outside any unrelated recovery window while
+	// exercising SIGTERM and the subsequent explicit recovery below.
+	if _, err = pool.Exec(ctx, `UPDATE jobs SET lease_expires_at=clock_timestamp()+interval '24 hours' WHERE event_id=$1 AND handler='worker.sigterm.blocked'`, eventID); err != nil {
+		t.Fatal(err)
+	}
 	start := time.Now()
 	if err = cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
