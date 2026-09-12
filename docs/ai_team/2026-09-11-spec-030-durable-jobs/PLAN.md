@@ -87,3 +87,16 @@ Task becomes `completed` only after DG-030-01 is decided, remote evidence passes
 без зарегистрированного handler не получает job и не помечается обработанным.
 Он остаётся наблюдаемым durable фактом до явной регистрации route; это сохраняет
 возможность безопасного future fan-out.
+
+## Финальное завершение — 2026-09-12
+
+Статус задачи: `completed`.
+
+- Финальный SHA: `de9f65421699c2cddbda3da94db2b1b1e6c73be2`.
+- CI/CD [34681058254](https://github.com/NET-BEAR/ohelpdesck/actions/runs/34681058254): `verify`, build/runtime smoke и `deploy-dev` завершились успешно.
+- Удалённый dev подтверждён на этом SHA: API, worker, PostgreSQL, Redis, MinIO и web работают; schema migration `9`, readiness `200`, `queue_metrics_up=1`.
+- Remote QA в изолированной PostgreSQL DB подтвердила последовательность AT017 → AT004 → combined `-race`; `go vet` и `gofmt` прошли. AT017 доказывает реальный SIGTERM, bounded runtime return, supervisor hard-stop и recovery истёкшего lease.
+- Независимый review одобрил cumulative runtime changes и заключительный test-only patch. JOB-R1..JOB-R5 закрыты.
+- Coverage final CI: 83.77% statements и 80.20% executable block lines; абсолютный порог 80% пройден. Историческое значение 84.0% получено иным harness/SHA и не является сопоставимым baseline; это зафиксировано как follow-up, а не скрыто.
+
+Follow-up: отдельные execution scenarios natural process exit без supervisor SIGKILL и in-flight API DB operation во время shutdown drain не входят в доказанный acceptance scope и требуют самостоятельной задачи при изменении shutdown policy.
