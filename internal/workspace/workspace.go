@@ -153,10 +153,18 @@ func (s *Service) List(ctx context.Context, actor uuid.UUID, q ListQuery) (Page,
 		where = append(where, "c.channel_id = ANY("+add(q.ChannelIDs)+")")
 	}
 	if len(q.Statuses) > 0 {
-		where = append(where, "c.status = ANY("+add(q.Statuses)+")")
+		statuses := make([]string, len(q.Statuses))
+		for i, value := range q.Statuses {
+			statuses[i] = string(value)
+		}
+		where = append(where, "c.status = ANY("+add(statuses)+"::conversation_status[])")
 	}
 	if len(q.Priorities) > 0 {
-		where = append(where, "c.priority = ANY("+add(q.Priorities)+")")
+		priorities := make([]string, len(q.Priorities))
+		for i, value := range q.Priorities {
+			priorities[i] = string(value)
+		}
+		where = append(where, "c.priority = ANY("+add(priorities)+"::conversation_priority[])")
 	}
 	if q.Assignee != nil {
 		where = append(where, "c.assignee_id="+add(*q.Assignee))
@@ -337,16 +345,16 @@ func (s *Service) Messages(ctx context.Context, actor, conversationID uuid.UUID,
 		return MessagePage{}, ErrNotFound
 	}
 	args := []any{conversationID}
-	where := "conversation_id=$1"
+	where := "m.conversation_id=$1"
 	direction := "ASC"
 	if bc != nil {
 		args = append(args, bc.CreatedAt, bc.ID)
-		where += " AND (created_at,id) < ($2,$3)"
+		where += " AND (m.created_at,m.id) < ($2,$3)"
 		direction = "DESC"
 	}
 	if ac != nil {
 		args = append(args, ac.CreatedAt, ac.ID)
-		where += " AND (created_at,id) > ($2,$3)"
+		where += " AND (m.created_at,m.id) > ($2,$3)"
 	}
 	args = append(args, limit+1)
 	rows, e := s.db.Query(ctx, `SELECT m.id,m.conversation_id,m.direction,m.actor_type,u.id,u.name,m.content_type,m.text_content,m.html_content,m.status,m.created_at,m.queued_at,m.sent_at,m.delivered_at,m.reply_to_message_id,m.error_code FROM messages m LEFT JOIN users u ON u.id=m.actor_user_id WHERE `+where+` ORDER BY m.created_at `+direction+`,m.id `+direction+` LIMIT $`+fmt.Sprint(len(args)), args...)

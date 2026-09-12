@@ -18,3 +18,12 @@ func TestParseWorkspaceListRejectsUnsafeSelectors(t *testing.T) {
 		t.Fatalf("valid query not parsed: %#v %v", q, err)
 	}
 }
+
+func TestWorkspaceRouteRequiresMountedReadService(t *testing.T) {
+	h := NewOperatorOutboundHTTPHandler(nil, false, nil, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/conversations", nil))
+	if w.Code != 404 {
+		t.Fatalf("unmounted workspace=%d", w.Code)
+	}
+}

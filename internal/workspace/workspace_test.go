@@ -27,3 +27,24 @@ func TestMessageCursorRoundTripAndValidation(t *testing.T) {
 		t.Fatalf("message cursor round trip failed: %#v %v", got, err)
 	}
 }
+
+func TestCursorsRejectOversizedAndWrongVersion(t *testing.T) {
+	if _, err := decodeCursor(string(make([]byte, 513))); err == nil {
+		t.Fatal("oversized list cursor accepted")
+	}
+	if _, err := decodeMessageCursor(encodeMessageCursor(messageCursor{V: 2, CreatedAt: time.Now(), ID: uuid.New()})); err == nil {
+		t.Fatal("wrong-version timeline cursor accepted")
+	}
+	if _, err := decodeMessageCursor("not-base64"); err == nil {
+		t.Fatal("malformed timeline cursor accepted")
+	}
+}
+
+func TestEmptyCursorsStartAFirstPage(t *testing.T) {
+	if cursor, err := decodeCursor(""); err != nil || cursor != nil {
+		t.Fatalf("list start cursor=%v err=%v", cursor, err)
+	}
+	if cursor, err := decodeMessageCursor(""); err != nil || cursor != nil {
+		t.Fatalf("timeline start cursor=%v err=%v", cursor, err)
+	}
+}
