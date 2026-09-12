@@ -23,8 +23,12 @@ func TestWorkspaceRouteRequiresMountedReadService(t *testing.T) {
 	h := NewOperatorOutboundHTTPHandler(nil, false, nil, nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/conversations", nil))
-	if w.Code != 404 { t.Fatalf("unmounted workspace=%d", w.Code) }
+	if w.Code != 404 {
+		t.Fatalf("unmounted workspace=%d", w.Code)
+	}
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/conversations/00000000-0000-0000-0000-000000000001", nil))
-	if w.Code != 404 { t.Fatalf("unmounted detail=%d", w.Code) }
+	if w.Code != 404 {
+		t.Fatalf("unmounted detail=%d", w.Code)
+	}
 }

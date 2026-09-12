@@ -86,10 +86,16 @@ func TestWorkspaceHTTPReadAndAssignment(t *testing.T) {
 	for _, path := range []string{"/api/v1/conversations", "/api/v1/conversations/" + inbound.ConversationID.String()} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
-		if w.Code != http.StatusUnauthorized { t.Fatalf("unauthenticated %s=%d", path, w.Code) }
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated %s=%d", path, w.Code)
+		}
 	}
-	if _, err := core.NewConversationService(pool).Assign(ctx, core.AssignConversation{ConversationID: uuid.New(), ExpectedVersion: 1, ActorID: operatorID}); !errors.Is(err, core.ErrConversationNotFound) { t.Fatalf("missing assignment=%v", err) }
-	if _, err := core.NewConversationService(pool).Assign(ctx, core.AssignConversation{ConversationID: inbound.ConversationID}); !errors.Is(err, core.ErrConversationNotFound) { t.Fatalf("invalid assignment=%v", err) }
+	if _, err := core.NewConversationService(pool).Assign(ctx, core.AssignConversation{ConversationID: uuid.New(), ExpectedVersion: 1, ActorID: operatorID}); !errors.Is(err, core.ErrConversationNotFound) {
+		t.Fatalf("missing assignment=%v", err)
+	}
+	if _, err := core.NewConversationService(pool).Assign(ctx, core.AssignConversation{ConversationID: inbound.ConversationID}); !errors.Is(err, core.ErrConversationNotFound) {
+		t.Fatalf("invalid assignment=%v", err)
+	}
 	request := func(method, path, body string, csrfHeader bool) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, bytes.NewBufferString(body))
 		r.AddCookie(&http.Cookie{Name: "ohelpdesck_session", Value: session})
