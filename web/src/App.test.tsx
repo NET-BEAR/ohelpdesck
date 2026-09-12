@@ -104,17 +104,18 @@ it('renders the selected conversation and its message timeline', async () => {
 });
 it('retains focus on the pagination control through an async timeline page load', async () => {
   const detail = { id: 'conversation-1', version: 1, assignee: null, capabilities: { can_reply: false, can_reassign: false } };
-  let resolvePage: ((value: unknown) => void) | undefined;
+  let resolvePage!: (value: unknown) => void;
   vi.spyOn(api, 'getConversation').mockResolvedValue(detail);
-  vi.spyOn(api, 'getConversationMessages').mockImplementation((_id, query) => {
+  const pages = vi.spyOn(api, 'getConversationMessages').mockImplementation((_id, query) => {
     if (!query?.after) return Promise.resolve({ items: [{ id: 'one', direction: 'incoming', status: 'received' }], next_cursor: 'later' });
     return new Promise(resolve => { resolvePage = resolve; });
   });
   mount('/workspace/conversation-1');
   const later = await screen.findByRole('button', { name: 'Позже' });
   later.focus(); fireEvent.click(later);
-  expect(later).toBe(document.activeElement);
-  resolvePage?.({ items: [{ id: 'two', direction: 'incoming', status: 'received' }] });
+  await waitFor(() => expect(pages).toHaveBeenLastCalledWith('conversation-1', { after: 'later' }));
+  resolvePage({ items: [{ id: 'two', direction: 'incoming', status: 'received', content: { text: 'Вторая страница' } }] });
+  await screen.findByText('Вторая страница');
   await waitFor(() => expect(document.activeElement).toBe(later));
 });
 it('uses a safe conversation error when either workspace query fails', async () => {
