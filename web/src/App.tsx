@@ -69,7 +69,7 @@ function ProfilePage() {
 function WorkspacePage() {
   const [search, setSearch] = useSearchParams();
   const status = search.get('status') ?? ''; const priority = search.get('priority') ?? ''; const assignee = search.get('assignee') ?? ''; const cursor = search.get('cursor') ?? ''; const history = search.getAll('previous');
-  function resetFilter(key: string, value: string) { const next = new URLSearchParams(); if (value) next.set(key, value); setSearch(next); }
+  function resetFilter(key: string, value: string) { const next = new URLSearchParams(search); next.delete('cursor'); next.delete('previous'); if (value) next.set(key, value); else next.delete(key); setSearch(next); }
   const filters = { status, priority, assignee, cursor };
   const queue = useQuery({ queryKey: ['workspace', filters], queryFn: () => getWorkspace(filters), retry: false, refetchInterval: 15_000 });
   if (queue.isPending) return <p role="status">Загружаем обращения…</p>;

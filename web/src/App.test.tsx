@@ -68,6 +68,13 @@ it('keeps queue filters and pagination accessible', async () => {
   fireEvent.click(await screen.findByLabelText('Следующая страница'));
   expect(await screen.findByLabelText('Предыдущая страница')).toBeDefined();
 });
+it('keeps other AND filters while resetting cursor after a filter change', async () => {
+  const request = vi.spyOn(api, 'getWorkspace').mockResolvedValue({ items: [], next_cursor: null });
+  mount('/workspace?status=open&priority=high&assignee=me&cursor=opaque&previous=older');
+  const status = await screen.findByLabelText('Фильтр статуса');
+  fireEvent.change(status, { target: { value: 'pending' } });
+  await waitFor(() => expect(request).toHaveBeenLastCalledWith({ status: 'pending', priority: 'high', assignee: 'me', cursor: '' }));
+});
 it('retries a failed operator workspace request explicitly', async () => {
   const request = vi.spyOn(api, 'getWorkspace').mockRejectedValueOnce(new Error('Сессия недоступна')).mockResolvedValue({ items: [], next_cursor: null });
   mount('/workspace');

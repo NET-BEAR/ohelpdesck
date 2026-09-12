@@ -271,7 +271,7 @@ paths:
       operationId: listConversations
       security: [{SessionCookie: []}]
       parameters:
-        - {name: cursor, in: query, description: "Opaque continuation cursor. Must be omitted when channel_id, status, priority or assignee filters are supplied.", schema: {type: string, maxLength: 512}}
+        - {name: cursor, in: query, description: "Opaque continuation cursor bound to the complete active filter set. Reuse it only with the same channel_id, status, priority and assignee selectors.", schema: {type: string, maxLength: 512}}
         - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
         - {name: sort, in: query, schema: {type: string, enum: [number_desc]}}
         - {name: channel_id, in: query, schema: {type: string, format: uuid}}
