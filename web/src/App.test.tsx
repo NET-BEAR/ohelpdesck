@@ -85,7 +85,7 @@ it('retries a failed operator workspace request explicitly', async () => {
 });
 it('renders the selected conversation and its message timeline', async () => {
   const detail = { id: 'conversation-1', version: 1, assignee: null, capabilities: { can_reply: false, can_reassign: false } };
-  const history = { items: [{ id: 'message-1', direction: 'outgoing', status: 'failed', content: { text: 'Здравствуйте' }, failed: { code: 'provider_rejected' } }, { id: 'message-2', direction: 'incoming', status: 'queued' }, { id: 'message-3', direction: 'outgoing', status: 'sent' }, { id: 'message-4', direction: 'outgoing', status: 'delivered' }, { id: 'message-5', direction: 'outgoing', status: 'read' }, { id: 'message-6', direction: 'outgoing', status: 'other' }], next_cursor: null };
+  const history = { items: [{ id: 'message-1', direction: 'outgoing', status: 'failed', content: { text: 'Здравствуйте' }, failed: { code: 'provider_rejected' } }, { id: 'message-2', direction: 'incoming', status: 'queued' }, { id: 'message-3', direction: 'outgoing', status: 'sent' }, { id: 'message-4', direction: 'outgoing', status: 'delivered' }, { id: 'message-5', direction: 'outgoing', status: 'read' }, { id: 'message-6', direction: 'outgoing', status: 'other' }], previous_cursor: 'before-page', next_cursor: 'after-page' };
   vi.spyOn(api, 'getConversation').mockResolvedValue(detail);
   vi.spyOn(api, 'getConversationMessages').mockResolvedValue(history);
   mount('/workspace/conversation-1');
@@ -97,7 +97,10 @@ it('renders the selected conversation and its message timeline', async () => {
   expect(screen.getByText('Ошибка доставки: отклонено провайдером')).toBeDefined();
   for (const label of ['В очереди', 'Отправлено', 'Доставлено', 'Прочитано', 'Статус неизвестен']) expect(screen.getByLabelText('История сообщений').textContent).toContain(label);
   expect(api.getConversation).toHaveBeenCalledWith('conversation-1');
-  expect(api.getConversationMessages).toHaveBeenCalledWith('conversation-1');
+  expect(api.getConversationMessages).toHaveBeenCalledWith('conversation-1', {});
+  fireEvent.click(screen.getByRole('button', { name: 'Ранее' }));
+  expect(await screen.findByRole('button', { name: 'Позже' })).toBeDefined();
+  fireEvent.click(screen.getByRole('button', { name: 'Позже' }));
 });
 it('uses a safe conversation error when either workspace query fails', async () => {
   vi.spyOn(api, 'getConversation').mockResolvedValue({ id: 'conversation-1', version: 1, assignee: null, capabilities: { can_reply: false, can_reassign: false } });

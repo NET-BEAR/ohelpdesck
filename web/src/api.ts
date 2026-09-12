@@ -104,7 +104,7 @@ async function workspaceJSON(path: string): Promise<unknown> {
 }
 export async function getWorkspace(query: Record<string, string> = {}): Promise<WorkspacePage> { const params = new URLSearchParams(Object.entries(query).filter(([, value]) => value)); const body = await workspaceJSON(`/api/v1/conversations${params.size ? `?${params}` : ''}`); if (typeof body !== 'object' || body === null || !Array.isArray((body as Record<string, unknown>).items)) throw new Error('Некорректный ответ API'); return body as WorkspacePage; }
 export async function getConversation(id: string): Promise<ConversationDetail> { return workspaceJSON(`/api/v1/conversations/${encodeURIComponent(id)}`) as Promise<ConversationDetail>; }
-export async function getConversationMessages(id: string): Promise<unknown> { return workspaceJSON(`/api/v1/conversations/${encodeURIComponent(id)}/messages`); }
+export async function getConversationMessages(id: string, query: Record<string, string> = {}): Promise<unknown> { const params = new URLSearchParams(Object.entries(query).filter(([, value]) => value)); return workspaceJSON(`/api/v1/conversations/${encodeURIComponent(id)}/messages${params.size ? `?${params}` : ''}`); }
 
 async function workspaceMutation(path: string, method: 'PATCH' | 'POST', body: unknown, headers: Record<string, string> = {}): Promise<unknown> {
   if (!csrfToken) throw new Error('Сессия недоступна');

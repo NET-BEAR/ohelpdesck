@@ -7,9 +7,10 @@ type TimelineEntry = { id: string; direction: string; status: string; content?: 
 function lifecycleLabel(status: string): string {
   switch (status) { case 'queued': return 'В очереди'; case 'sent': return 'Отправлено'; case 'delivered': return 'Доставлено'; case 'read': return 'Прочитано'; case 'failed': return 'Не отправлено'; default: return 'Статус неизвестен'; }
 }
-function Timeline({ value }: { value: unknown }) {
-  const entries = typeof value === 'object' && value !== null && Array.isArray((value as { items?: unknown }).items) ? (value as { items: TimelineEntry[] }).items : [];
-  return <section aria-labelledby="timeline-title" aria-live="polite"><h2 id="timeline-title">Сообщения</h2><ol aria-label="История сообщений">{entries.map(message => <li key={message.id}><strong>{message.direction === 'incoming' ? 'Клиент' : 'Оператор'}</strong><span aria-label="Состояние доставки">{lifecycleLabel(message.status)}</span>{message.content?.text && <p>{message.content.text}</p>}{message.status === 'failed' && <p role="status">Ошибка доставки: {message.failed?.code === 'provider_rejected' ? 'отклонено провайдером' : 'не удалось доставить'}</p>}</li>)}</ol>{entries.length === 0 && <p>Сообщений пока нет.</p>}</section>;
+function Timeline({ value, busy, onBefore, onAfter }: { value: unknown; busy: boolean; onBefore: (cursor: string) => void; onAfter: (cursor: string) => void }) {
+  const page = typeof value === 'object' && value !== null ? value as { items?: TimelineEntry[]; previous_cursor?: string | null; next_cursor?: string | null } : {};
+  const entries = Array.from(new Map((page.items ?? []).map(message => [message.id, message])).values());
+  return <section aria-labelledby="timeline-title" aria-live="polite" aria-busy={busy}><h2 id="timeline-title">Сообщения</h2><ol aria-label="История сообщений">{entries.map(message => <li key={message.id}><strong>{message.direction === 'incoming' ? 'Клиент' : 'Оператор'}</strong><span aria-label="Состояние доставки">{lifecycleLabel(message.status)}</span>{message.content?.text && <p>{message.content.text}</p>}{message.status === 'failed' && <p role="status">Ошибка доставки: {message.failed?.code === 'provider_rejected' ? 'отклонено провайдером' : 'не удалось доставить'}</p>}</li>)}</ol>{entries.length === 0 && <p>Сообщений пока нет.</p>}<nav aria-label="Страницы сообщений"><button disabled={!page.previous_cursor || busy} onClick={() => page.previous_cursor && onBefore(page.previous_cursor)}>Ранее</button><button disabled={!page.next_cursor || busy} onClick={() => page.next_cursor && onAfter(page.next_cursor)}>Позже</button></nav></section>;
 }
 
 export class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
@@ -78,13 +79,14 @@ function WorkspacePage() {
 }
 function ConversationPage() {
   const { id = '' } = useParams<{ id: string }>();
-  const detail = useQuery({ queryKey: ['conversation', id], queryFn: () => getConversation(id), retry: false, refetchInterval: 15_000 });
-  const messages = useQuery({ queryKey: ['conversation', id, 'messages'], queryFn: () => getConversationMessages(id), retry: false, refetchInterval: 15_000 });
-  const currentUser = useQuery({ queryKey: ['auth', 'me'], queryFn: getMe, retry: false, enabled: detail.data?.capabilities.can_reassign === true });
   const [replyText, setReplyText] = useState('');
   const [replyKey, setReplyKey] = useState<string>();
   const [actionError, setActionError] = useState<string>();
   const [pending, setPending] = useState(false);
+  const detail = useQuery({ queryKey: ['conversation', id], queryFn: () => getConversation(id), retry: false, refetchInterval: 15_000 });
+  const [timelineCursor, setTimelineCursor] = useState<Record<string, string>>({});
+  const messages = useQuery({ queryKey: ['conversation', id, 'messages', timelineCursor], queryFn: () => getConversationMessages(id, timelineCursor), retry: false, refetchInterval: replyText ? false : 15_000 });
+  const currentUser = useQuery({ queryKey: ['auth', 'me'], queryFn: getMe, retry: false, enabled: detail.data?.capabilities.can_reassign === true });
   if (detail.isPending || messages.isPending) return <p role="status">Загружаем диалог…</p>;
   if (detail.isError || messages.isError) return <p role="alert">Не удалось загрузить диалог.</p>;
   if (!detail.data) return <p role="alert">Не удалось загрузить диалог.</p>;
@@ -108,7 +110,7 @@ function ConversationPage() {
     {actionError && <p role="alert">{actionError}</p>}
     {canReassign && <p><button type="button" disabled={pending || currentUser.isPending || currentUser.isError} onClick={() => void changeAssignee(currentUser.data?.id ?? null)}>Взять на себя</button><button type="button" disabled={pending || conversation.assignee === null} onClick={() => void changeAssignee(null)}>Снять назначение</button></p>}
     {canReply && <form onSubmit={(event) => void submitReply(event)}><label>Ответ<textarea value={replyText} onChange={(event) => setReplyText(event.target.value)} required maxLength={10_000} /></label><button type="submit" disabled={pending}>{pending ? 'Сохраняем ответ…' : 'Отправить в очередь'}</button></form>}
-    <pre aria-label="Состояние диалога">{JSON.stringify(conversation, null, 2)}</pre><Timeline value={messages.data} /></section>;
+    <pre aria-label="Состояние диалога">{JSON.stringify(conversation, null, 2)}</pre><Timeline value={messages.data} busy={messages.isFetching} onBefore={before => setTimelineCursor({ before })} onAfter={after => setTimelineCursor({ after })} /></section>;
 }
 
 export function App() {
