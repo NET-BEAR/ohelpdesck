@@ -48,7 +48,6 @@ func TestWorkspaceHTTPReadAndAssignment(t *testing.T) {
 	if err != nil || queued.Status != core.MessageQueued {
 		t.Fatalf("queue=%+v err=%v", queued, err)
 	}
-
 	// Service-level guards are still authoritative when a caller bypasses HTTP.
 	readerOnly, err := repo.Create(ctx, auth.CreateUser{Login: "workspace-reader-" + uuid.NewString(), Email: "workspace-reader-" + uuid.NewString() + "@example.test", Name: "Workspace Reader", Password: "correct horse battery staple", Role: auth.Supervisor})
 	if err != nil {
@@ -69,12 +68,28 @@ func TestWorkspaceHTTPReadAndAssignment(t *testing.T) {
 	if _, err := reads.Messages(ctx, operatorID, inbound.ConversationID, "bad", "", 1); !errors.Is(err, workspace.ErrInvalidQuery) {
 		t.Fatalf("invalid timeline cursor=%v", err)
 	}
+	if _, err := reads.Messages(ctx, operatorID, inbound.ConversationID, "x", "y", 1); !errors.Is(err, workspace.ErrInvalidQuery) {
+		t.Fatalf("conflicting timeline cursors=%v", err)
+	}
+	if _, err := reads.Messages(ctx, operatorID, inbound.ConversationID, "", "", 101); !errors.Is(err, workspace.ErrInvalidQuery) {
+		t.Fatalf("oversized timeline limit=%v", err)
+	}
+	if _, err := reads.Detail(ctx, operatorID, uuid.Nil, true, true); !errors.Is(err, workspace.ErrNotFound) {
+		t.Fatalf("nil detail id=%v", err)
+	}
 
 	session, csrf, err := repo.CreateSession(ctx, operatorID.String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := auth.WithWorkspace(auth.NewOperatorOutboundHTTPHandler(repo, false, core.NewConversationService(pool), core.NewOutboundService(pool)), workspace.NewService(pool))
+	for _, path := range []string{"/api/v1/conversations", "/api/v1/conversations/" + inbound.ConversationID.String()} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != http.StatusUnauthorized { t.Fatalf("unauthenticated %s=%d", path, w.Code) }
+	}
+	if _, err := core.NewConversationService(pool).Assign(ctx, core.AssignConversation{ConversationID: uuid.New(), ExpectedVersion: 1, ActorID: operatorID}); !errors.Is(err, core.ErrConversationNotFound) { t.Fatalf("missing assignment=%v", err) }
+	if _, err := core.NewConversationService(pool).Assign(ctx, core.AssignConversation{ConversationID: inbound.ConversationID}); !errors.Is(err, core.ErrConversationNotFound) { t.Fatalf("invalid assignment=%v", err) }
 	request := func(method, path, body string, csrfHeader bool) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, bytes.NewBufferString(body))
 		r.AddCookie(&http.Cookie{Name: "ohelpdesck_session", Value: session})
@@ -155,6 +170,13 @@ func TestWorkspaceHTTPReadAndAssignment(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	failed, err := core.NewOutboundService(pool).QueueOutbound(ctx, core.QueueOutboundCommand{ConversationID: inbound.ConversationID, ActorID: agentID, Text: "definitive provider failure", IdempotencyKey: "workspace-failed-" + uuid.NewString()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := core.NewOutboundService(pool).MarkFailed(ctx, core.MarkMessageFailedCommand{MessageID: failed.ID, ErrorCode: "provider_rejected", ErrorMessage: "provider body must not reach workspace"}); err != nil {
+		t.Fatal(err)
+	}
 	firstTimeline := request(http.MethodGet, "/api/v1/conversations/"+inbound.ConversationID.String()+"/messages?limit=1", "", false)
 	var timelinePage struct {
 		Items []struct {
@@ -210,6 +232,12 @@ func TestWorkspaceHTTPReadAndAssignment(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT version,assignee_id FROM conversations WHERE id=$1`, inbound.ConversationID).Scan(&version, &assignee); err != nil || version != 3 || assignee != targetID {
 		t.Fatalf("assignment version=%d assignee=%s err=%v", version, assignee, err)
 	}
+	if response := request(http.MethodGet, "/api/v1/conversations/"+inbound.ConversationID.String(), "", false); response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(target.ID)) {
+		t.Fatalf("assigned detail=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := request(http.MethodGet, "/api/v1/conversations/"+inbound.ConversationID.String()+"/messages?limit=20", "", false); response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"code":"provider_rejected"`)) || bytes.Contains(response.Body.Bytes(), []byte("provider body must not reach workspace")) {
+		t.Fatalf("failed timeline=%d body=%s", response.Code, response.Body.String())
+	}
 	stale := request(http.MethodPatch, "/api/v1/conversations/"+inbound.ConversationID.String()+"/assignee", `{"expected_version":1,"assignee_id":null}`, true)
 	if stale.Code != http.StatusConflict {
 		t.Fatalf("stale=%d body=%s", stale.Code, stale.Body.String())
@@ -221,5 +249,8 @@ func TestWorkspaceHTTPReadAndAssignment(t *testing.T) {
 		if response := request(http.MethodGet, path, "", false); response.Code != http.StatusForbidden || bytes.Contains(response.Body.Bytes(), []byte(inbound.ConversationID.String())) {
 			t.Fatalf("denied %s code=%d body=%s", path, response.Code, response.Body.String())
 		}
+	}
+	if response := request(http.MethodGet, "/api/v1/conversations", "", false); response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"items":[]`)) {
+		t.Fatalf("membership-filtered list=%d body=%s", response.Code, response.Body.String())
 	}
 }

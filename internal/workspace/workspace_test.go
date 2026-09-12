@@ -1,6 +1,8 @@
 package workspace
 
 import (
+	"context"
+	"errors"
 	"github.com/google/uuid"
 	"testing"
 	"time"
@@ -46,5 +48,22 @@ func TestEmptyCursorsStartAFirstPage(t *testing.T) {
 	}
 	if cursor, err := decodeMessageCursor(""); err != nil || cursor != nil {
 		t.Fatalf("timeline start cursor=%v err=%v", cursor, err)
+	}
+}
+
+func TestReadServiceRejectsMissingDependenciesAndIDs(t *testing.T) {
+	service := NewService(nil)
+	actor, conversation := uuid.New(), uuid.New()
+	if _, err := service.List(context.Background(), actor, ListQuery{}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("list without db=%v", err)
+	}
+	if _, err := service.Detail(context.Background(), actor, conversation, false, false); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("detail without db=%v", err)
+	}
+	if _, err := service.Messages(context.Background(), actor, conversation, "", "", 0); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("messages without db=%v", err)
+	}
+	if _, err := NewService(nil).List(context.Background(), uuid.Nil, ListQuery{}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("nil actor=%v", err)
 	}
 }
