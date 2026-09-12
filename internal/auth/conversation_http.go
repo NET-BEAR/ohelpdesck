@@ -26,7 +26,7 @@ func (h *HTTPHandler) conversationCommand(w http.ResponseWriter, r *http.Request
 		return
 	}
 	principal, _, ok := h.authenticate(w, r, true)
-	if !ok || !h.allowed(w, r, principal, PermissionConversationReply) {
+	if !ok {
 		return
 	}
 	segments := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/conversations/"), "/")
@@ -45,7 +45,27 @@ func (h *HTTPHandler) conversationCommand(w http.ResponseWriter, r *http.Request
 		return
 	}
 	switch segments[1] {
+	case "assignee":
+		if !h.allowed(w, r, principal, PermissionConversationReassign) {
+			return
+		}
+		var input struct {
+			ExpectedVersion int64      `json:"expected_version"`
+			AssigneeID      *uuid.UUID `json:"assignee_id"`
+		}
+		if !decodeJSON(w, r, &input) {
+			return
+		}
+		if input.ExpectedVersion < 1 {
+			writeError(w, http.StatusBadRequest, "validation_failed")
+			return
+		}
+		conversation, err := h.conversations.Assign(r.Context(), core.AssignConversation{ConversationID: conversationID, ExpectedVersion: input.ExpectedVersion, AssigneeID: input.AssigneeID, ActorID: actorID})
+		h.writeConversationResult(w, conversation, err)
 	case "status":
+		if !h.allowed(w, r, principal, PermissionConversationReply) {
+			return
+		}
 		var input struct {
 			ExpectedVersion int64                   `json:"expected_version"`
 			Status          core.ConversationStatus `json:"status"`
@@ -61,6 +81,9 @@ func (h *HTTPHandler) conversationCommand(w http.ResponseWriter, r *http.Request
 		conversation, err := h.conversations.ChangeStatus(r.Context(), core.ChangeConversationStatus{ConversationID: conversationID, ExpectedVersion: input.ExpectedVersion, Status: input.Status, SnoozedUntil: input.SnoozedUntil, ActorID: actorID})
 		h.writeConversationResult(w, conversation, err)
 	case "priority":
+		if !h.allowed(w, r, principal, PermissionConversationReply) {
+			return
+		}
 		var input struct {
 			ExpectedVersion int64                     `json:"expected_version"`
 			Priority        core.ConversationPriority `json:"priority"`
@@ -91,7 +114,7 @@ func (h *HTTPHandler) writeConversationResult(w http.ResponseWriter, conversatio
 		writeError(w, http.StatusConflict, "version_conflict")
 	case errors.Is(err, core.ErrInvalidConversationTransition):
 		writeError(w, http.StatusConflict, "invalid_transition")
-	case errors.Is(err, core.ErrInvalidSnoozeDeadline), errors.Is(err, core.ErrInvalidConversationPriority):
+	case errors.Is(err, core.ErrInvalidSnoozeDeadline), errors.Is(err, core.ErrInvalidConversationPriority), errors.Is(err, core.ErrAssigneeIneligible):
 		writeError(w, http.StatusBadRequest, "validation_failed")
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error")

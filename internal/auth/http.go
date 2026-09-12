@@ -13,6 +13,7 @@ import (
 
 	"github.com/NET-BEAR/ohelpdesck/internal/channels"
 	"github.com/NET-BEAR/ohelpdesck/internal/core"
+	"github.com/NET-BEAR/ohelpdesck/internal/workspace"
 	"github.com/google/uuid"
 	"time"
 
@@ -30,6 +31,7 @@ type HTTPHandler struct {
 	conversations *core.ConversationService
 	outbound      *core.OutboundService
 	channels      *channels.Service
+	workspace     *workspace.Service
 }
 
 type Observability struct {
@@ -65,6 +67,15 @@ func NewOperatorOutboundChannelsHTTPHandler(repository *Repository, secureCookie
 	return h
 }
 
+// WithWorkspace adds the operator read boundary without changing existing constructors.
+func WithWorkspace(handler http.Handler, service *workspace.Service) http.Handler {
+	if h, ok := handler.(*HTTPHandler); ok {
+		h.workspace = service
+		return h
+	}
+	return handler
+}
+
 func newHTTPHandler(repository *Repository, secureCookie bool, conversations *core.ConversationService, observability ...Observability) *HTTPHandler {
 	h := &HTTPHandler{repository: repository, secureCookie: secureCookie, limiter: newLoginLimiter(5, 15*time.Minute), conversations: conversations}
 	if len(observability) > 0 {
@@ -96,6 +107,10 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.createChannel(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/v1/channels/"):
 		h.channelCommand(w, r)
+	case r.URL.Path == "/api/v1/conversations" && r.Method == http.MethodGet:
+		h.workspaceList(w, r)
+	case strings.HasPrefix(r.URL.Path, "/api/v1/conversations/") && r.Method == http.MethodGet:
+		h.workspaceRead(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/v1/conversations/") && r.Method == http.MethodPatch:
 		h.conversationCommand(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/v1/conversations/") && r.Method == http.MethodPost:

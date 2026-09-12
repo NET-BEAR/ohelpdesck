@@ -16,6 +16,7 @@ import (
 	"github.com/NET-BEAR/ohelpdesck/internal/platform/redis"
 	"github.com/NET-BEAR/ohelpdesck/internal/platform/storage"
 	"github.com/NET-BEAR/ohelpdesck/internal/platform/telemetry"
+	"github.com/NET-BEAR/ohelpdesck/internal/workspace"
 	"net/http"
 	"os"
 	"time"
@@ -137,7 +138,7 @@ func run(ctx context.Context, worker bool, register WorkerRegistration) error {
 		registry.Register(channels.TypeTelegramBot, telegram)
 		channelService := channels.NewServiceWithRegistry(db, credentialCipher, registry)
 		inbound := core.NewReceiveInboundService(db)
-		api := auth.NewOperatorOutboundChannelsHTTPHandler(repository, c.Environment == "production", core.NewConversationService(db), core.NewOutboundService(db), channelService, auth.Observability{Metrics: metrics, Log: log})
+		api := auth.WithWorkspace(auth.NewOperatorOutboundChannelsHTTPHandler(repository, c.Environment == "production", core.NewConversationService(db), core.NewOutboundService(db), channelService, auth.Observability{Metrics: metrics, Log: log}), workspace.NewService(db))
 		mux := http.NewServeMux()
 		mux.Handle("/api/v1/webhooks/telegram-bot/", telegrambot.NewWebhookHandler(telegram, channelService, channelService, inbound))
 		mux.Handle("/", api)

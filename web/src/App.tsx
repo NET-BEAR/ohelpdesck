@@ -1,7 +1,7 @@
 import { Component, type FormEvent, type ReactNode, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, Navigate, Route, Routes, useNavigate } from 'react-router-dom';
-import { getMe, getReadiness, login, logout } from './api';
+import { getConversation, getConversationMessages, getMe, getReadiness, getWorkspace, login, logout } from './api';
 
 export class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
@@ -56,11 +56,30 @@ function ProfilePage() {
     <button onClick={() => void signOut()}>Выйти</button></section>;
 }
 
+
+function WorkspacePage() {
+  const queue = useQuery({ queryKey: ['workspace'], queryFn: getWorkspace, retry: false, refetchInterval: 15_000 });
+  if (queue.isPending) return <p role="status">Загружаем обращения…</p>;
+  if (queue.isError) return <p role="alert">{queue.error.message}</p>;
+  if (queue.data.items.length === 0) return <section><h1>Обращения</h1><p>В доступных каналах обращений нет.</p></section>;
+  return <section aria-labelledby="workspace-title"><h1 id="workspace-title">Обращения</h1><button onClick={() => void queue.refetch()} disabled={queue.isFetching}>Обновить</button><ul>{queue.data.items.map(item => <li key={item.id}><Link to={`/workspace/${item.id}`}>#{item.number} · {item.contact.display_name}</Link><p>{item.channel.name} · {item.status} · {item.priority}</p></li>)}</ul></section>;
+}
+function ConversationPage() {
+  const id = window.location.pathname.split('/').pop() ?? '';
+  const detail = useQuery({ queryKey: ['conversation', id], queryFn: () => getConversation(id), retry: false, refetchInterval: 15_000 });
+  const messages = useQuery({ queryKey: ['conversation', id, 'messages'], queryFn: () => getConversationMessages(id), retry: false, refetchInterval: 15_000 });
+  if (detail.isPending || messages.isPending) return <p role="status">Загружаем диалог…</p>;
+  if (detail.isError || messages.isError) return <p role="alert">Не удалось загрузить диалог.</p>;
+  return <section><p><Link to="/workspace">К обращениям</Link></p><h1>Диалог</h1><pre aria-label="Состояние диалога">{JSON.stringify(detail.data, null, 2)}</pre><h2>Сообщения</h2><pre aria-label="История сообщений">{JSON.stringify(messages.data, null, 2)}</pre></section>;
+}
+
 export function App() {
   return <ErrorBoundary><header><Link to="/health">Платформа поддержки</Link></header><main><Routes>
     <Route path="/" element={<Navigate to="/login" replace />} />
     <Route path="/login" element={<LoginPage />} />
     <Route path="/me" element={<ProfilePage />} />
+    <Route path="/workspace" element={<WorkspacePage />} />
+    <Route path="/workspace/:id" element={<ConversationPage />} />
     <Route path="/health" element={<HealthPage />} />
     <Route path="*" element={<><h1>Страница не найдена</h1><Link to="/health">Состояние платформы</Link></>} />
   </Routes></main></ErrorBoundary>;

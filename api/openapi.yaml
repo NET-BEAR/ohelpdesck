@@ -266,6 +266,61 @@ paths:
         '409': {description: Channel cannot be enabled before local validation succeeds, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '400': {description: Invalid channel UUID, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '503': {description: Channel administration unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/conversations:
+    get:
+      operationId: listConversations
+      security: [{SessionCookie: []}]
+      parameters:
+        - {name: cursor, in: query, schema: {type: string, maxLength: 512}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+        - {name: sort, in: query, schema: {type: string, enum: [number_desc]}}
+        - {name: channel_id, in: query, schema: {type: string, format: uuid}}
+        - {name: status, in: query, schema: {$ref: '#/components/schemas/ConversationStatus'}}
+        - {name: priority, in: query, schema: {$ref: '#/components/schemas/ConversationPriority'}}
+        - {name: assignee, in: query, schema: {type: string}}
+      responses:
+        '200': {description: Authorized queue page, content: {application/json: {schema: {$ref: '#/components/schemas/ConversationPage'}}}}
+        '400': {description: Invalid filter or cursor, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing conversation.read, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/conversations/{id}:
+    get:
+      operationId: getConversation
+      security: [{SessionCookie: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses:
+        '200': {description: Authorized safe conversation detail, content: {application/json: {schema: {$ref: '#/components/schemas/ConversationDetail'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing conversation.read or channel membership, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/conversations/{id}/messages:
+    get:
+      operationId: listConversationMessages
+      security: [{SessionCookie: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: before, in: query, schema: {type: string, maxLength: 512}}
+        - {name: after, in: query, schema: {type: string, maxLength: 512}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+      responses:
+        '200': {description: Authorized safe timeline page, content: {application/json: {schema: {$ref: '#/components/schemas/MessagePage'}}}}
+        '400': {description: Invalid cursor, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing conversation.read or channel membership, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/conversations/{id}/assignee:
+    patch:
+      operationId: assignConversation
+      security: [{SessionCookie: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}, {$ref: '#/components/parameters/CSRFToken'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AssignmentRequest'}}}}
+      responses:
+        '200': {description: Assignment updated, content: {application/json: {schema: {$ref: '#/components/schemas/Conversation'}}}}
+        '400': {description: Invalid or ineligible assignment, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing conversation.reassign or channel membership, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '409': {description: Version conflict, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   /api/v1/conversations/{id}/status:
     patch:
       operationId: changeConversationStatus
@@ -496,6 +551,25 @@ components:
         name: {type: string, minLength: 1, maxLength: 255}
         permissions: {type: array, items: {type: string}, uniqueItems: true}
 
+    ConversationPage:
+      type: object
+      required: [items, next_cursor]
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/ConversationListItem'}}, next_cursor: {type: [string, 'null']}}
+    ConversationListItem:
+      type: object
+      required: [id, number, channel, contact, status, priority, last_activity_at, version]
+      properties: {id: {type: string, format: uuid}, number: {type: integer, format: int64}, channel: {type: object}, contact: {type: object}, assignee: {type: [object, 'null']}, status: {$ref: '#/components/schemas/ConversationStatus'}, priority: {$ref: '#/components/schemas/ConversationPriority'}, waiting_since: {type: [string, 'null'], format: date-time}, last_activity_at: {type: string, format: date-time}, version: {type: integer, format: int64}}
+    ConversationDetail:
+      allOf: [{$ref: '#/components/schemas/ConversationListItem'}]
+    MessagePage:
+      type: object
+      required: [items]
+      properties: {items: {type: array, items: {type: object}}, previous_cursor: {type: [string, 'null']}, next_cursor: {type: [string, 'null']}}
+    AssignmentRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, assignee_id]
+      properties: {expected_version: {type: integer, format: int64, minimum: 1}, assignee_id: {type: [string, 'null'], format: uuid}}
     ConversationStatus:
       type: string
       enum: [open, pending, resolved, snoozed]

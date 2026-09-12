@@ -1,0 +1,4 @@
+DROP INDEX IF EXISTS channel_memberships_reassign_idx;
+DROP INDEX IF EXISTS channel_memberships_read_idx;
+DROP INDEX IF EXISTS conversations_workspace_assignee_number_idx;
+DROP INDEX IF EXISTS conversations_workspace_channel_status_number_idx;

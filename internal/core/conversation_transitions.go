@@ -19,6 +19,7 @@ var (
 	ErrInvalidSnoozeDeadline         = errors.New("invalid_snooze_deadline")
 	ErrInvalidConversationPriority   = errors.New("invalid_conversation_priority")
 	ErrConversationForbidden         = errors.New("conversation_forbidden")
+	ErrAssigneeIneligible            = errors.New("assignee_ineligible")
 )
 
 type ConversationStatus string
@@ -44,6 +45,7 @@ type Conversation struct {
 	Status                   ConversationStatus
 	Priority                 ConversationPriority
 	ResolvedAt, SnoozedUntil *time.Time
+	AssigneeID               *uuid.UUID
 	Version                  int64
 }
 
@@ -56,6 +58,14 @@ type ChangeConversationStatus struct {
 	// ActorID is set only by authenticated operator boundaries. It activates
 	// the locked Channel membership capability check inside this transaction.
 	ActorID uuid.UUID
+}
+
+type AssignConversation struct {
+	ConversationID  uuid.UUID
+	ExpectedVersion int64
+	AssigneeID      *uuid.UUID
+	ActorID         uuid.UUID
+	CorrelationID   uuid.UUID
 }
 
 type SetConversationPriority struct {
@@ -154,6 +164,57 @@ func (s *ConversationService) SetPriority(ctx context.Context, command SetConver
 	return result, err
 }
 
+func (s *ConversationService) Assign(ctx context.Context, command AssignConversation) (Conversation, error) {
+	if s == nil || s.db == nil || command.ConversationID == uuid.Nil || command.ActorID == uuid.Nil || command.ExpectedVersion < 1 {
+		return Conversation{}, ErrConversationNotFound
+	}
+	var result Conversation
+	err := s.db.WithinTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var current Conversation
+		if err := tx.QueryRow(ctx, `SELECT id,channel_id,status,priority,resolved_at,snoozed_until,assignee_id,version FROM conversations WHERE id=$1 FOR UPDATE`, command.ConversationID).Scan(&current.ID, &current.ChannelID, &current.Status, &current.Priority, &current.ResolvedAt, &current.SnoozedUntil, &current.AssigneeID, &current.Version); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrConversationNotFound
+			}
+			return fmt.Errorf("conversation lookup: %w", err)
+		}
+		var canReassign bool
+		if err := tx.QueryRow(ctx, `SELECT can_reassign FROM channel_memberships WHERE channel_id=$1 AND user_id=$2 FOR UPDATE`, current.ChannelID, command.ActorID).Scan(&canReassign); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrConversationForbidden
+			}
+			return fmt.Errorf("channel membership lookup: %w", err)
+		}
+		if !canReassign {
+			return ErrConversationForbidden
+		}
+		if current.Version != command.ExpectedVersion {
+			return ErrVersionConflict
+		}
+		if command.AssigneeID != nil {
+			var eligible bool
+			err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users u JOIN channel_memberships cm ON cm.user_id=u.id WHERE u.id=$1 AND u.status='active' AND cm.channel_id=$2 AND cm.can_read AND cm.can_reply)`, *command.AssigneeID, current.ChannelID).Scan(&eligible)
+			if err != nil {
+				return fmt.Errorf("assignee eligibility: %w", err)
+			}
+			if !eligible {
+				return ErrAssigneeIneligible
+			}
+		}
+		var at time.Time
+		if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&at); err != nil {
+			return fmt.Errorf("conversation mutation time: %w", err)
+		}
+		result = current
+		result.AssigneeID = command.AssigneeID
+		result.Version++
+		if _, err := tx.Exec(ctx, `UPDATE conversations SET assignee_id=$2,version=$3,updated_at=$4 WHERE id=$1`, current.ID, command.AssigneeID, result.Version, at); err != nil {
+			return fmt.Errorf("conversation assignment: %w", err)
+		}
+		return s.outbox.Append(ctx, tx, outbox.Event{ID: uuid.New(), AggregateID: current.ID, AggregateType: "conversation", Type: "conversation.assignee_changed", CorrelationID: correlationID(command.CorrelationID), OccurredAt: at, Payload: map[string]any{"conversation_id": current.ID, "channel_id": current.ChannelID, "assignee_id": command.AssigneeID, "version": result.Version, "occurred_at": at}})
+	})
+	return result, err
+}
+
 func loadConversationForUpdate(ctx context.Context, tx pgx.Tx, id, actorID uuid.UUID) (Conversation, error) {
 	if actorID != uuid.Nil {
 		var channelID uuid.UUID
@@ -175,7 +236,7 @@ func loadConversationForUpdate(ctx context.Context, tx pgx.Tx, id, actorID uuid.
 		}
 	}
 	var conversation Conversation
-	if err := tx.QueryRow(ctx, `SELECT id,channel_id,status,priority,resolved_at,snoozed_until,version FROM conversations WHERE id=$1 FOR UPDATE`, id).Scan(&conversation.ID, &conversation.ChannelID, &conversation.Status, &conversation.Priority, &conversation.ResolvedAt, &conversation.SnoozedUntil, &conversation.Version); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT id,channel_id,status,priority,resolved_at,snoozed_until,assignee_id,version FROM conversations WHERE id=$1 FOR UPDATE`, id).Scan(&conversation.ID, &conversation.ChannelID, &conversation.Status, &conversation.Priority, &conversation.ResolvedAt, &conversation.SnoozedUntil, &conversation.AssigneeID, &conversation.Version); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Conversation{}, ErrConversationNotFound
 		}
