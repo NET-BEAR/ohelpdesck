@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -89,9 +90,43 @@ type Service struct{ db *database.Pool }
 func NewService(db *database.Pool) *Service { return &Service{db: db} }
 
 type listCursor struct {
-	V      int       `json:"v"`
-	Number int64     `json:"number"`
-	ID     uuid.UUID `json:"id"`
+	V       int       `json:"v"`
+	Number  int64     `json:"number"`
+	ID      uuid.UUID `json:"id"`
+	Filters string    `json:"filters"`
+}
+
+type listFilters struct {
+	ChannelIDs []string `json:"channel_ids"`
+	Statuses   []string `json:"statuses"`
+	Priorities []string `json:"priorities"`
+	Assignee   string   `json:"assignee"`
+	Unassigned bool     `json:"unassigned"`
+}
+
+func canonicalListFilters(q ListQuery) string {
+	filters := listFilters{ChannelIDs: make([]string, 0, len(q.ChannelIDs)), Statuses: make([]string, 0, len(q.Statuses)), Priorities: make([]string, 0, len(q.Priorities)), Unassigned: q.Unassigned}
+	for _, id := range q.ChannelIDs {
+		filters.ChannelIDs = append(filters.ChannelIDs, id.String())
+	}
+	for _, status := range q.Statuses {
+		filters.Statuses = append(filters.Statuses, string(status))
+	}
+	for _, priority := range q.Priorities {
+		filters.Priorities = append(filters.Priorities, string(priority))
+	}
+	if q.Assignee != nil {
+		filters.Assignee = q.Assignee.String()
+	}
+	sort.Strings(filters.ChannelIDs)
+	sort.Strings(filters.Statuses)
+	sort.Strings(filters.Priorities)
+	encoded, _ := json.Marshal(filters)
+	return string(encoded)
+}
+
+func matchesListCursorFilters(cursor *listCursor, q ListQuery) bool {
+	return cursor != nil && cursor.Filters == canonicalListFilters(q)
 }
 
 func decodeCursor(raw string) (*listCursor, error) {
@@ -106,7 +141,7 @@ func decodeCursor(raw string) (*listCursor, error) {
 		return nil, ErrInvalidQuery
 	}
 	var c listCursor
-	if json.Unmarshal(b, &c) != nil || c.V != 1 || c.Number < 1 || c.ID == uuid.Nil {
+	if json.Unmarshal(b, &c) != nil || c.V != 2 || c.Number < 1 || c.ID == uuid.Nil || c.Filters == "" {
 		return nil, ErrInvalidQuery
 	}
 	return &c, nil
@@ -136,7 +171,7 @@ func (s *Service) List(ctx context.Context, actor uuid.UUID, q ListQuery) (Page,
 	if e != nil {
 		return Page{}, e
 	}
-	if c != nil && (len(q.ChannelIDs) > 0 || len(q.Statuses) > 0 || len(q.Priorities) > 0 || q.Assignee != nil || q.Unassigned) {
+	if c != nil && !matchesListCursorFilters(c, q) {
 		return Page{}, ErrInvalidQuery
 	}
 	for _, v := range q.Statuses {
@@ -221,7 +256,7 @@ func (s *Service) List(ctx context.Context, actor uuid.UUID, q ListQuery) (Page,
 	if len(items) > q.Limit {
 		last := items[q.Limit-1]
 		result.Items = items[:q.Limit]
-		next := encodeCursor(listCursor{V: 1, Number: last.Number, ID: last.ID})
+		next := encodeCursor(listCursor{V: 2, Number: last.Number, ID: last.ID, Filters: canonicalListFilters(q)})
 		result.NextCursor = &next
 	}
 	return result, nil

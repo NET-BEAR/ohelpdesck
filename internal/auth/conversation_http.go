@@ -18,6 +18,11 @@ type conversationResponse struct {
 	ResolvedAt   *time.Time                `json:"resolved_at,omitempty"`
 	SnoozedUntil *time.Time                `json:"snoozed_until,omitempty"`
 	Version      int64                     `json:"version"`
+	Assignee     *conversationAssignee     `json:"assignee"`
+}
+type conversationAssignee struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 func (h *HTTPHandler) conversationCommand(w http.ResponseWriter, r *http.Request) {
@@ -61,7 +66,7 @@ func (h *HTTPHandler) conversationCommand(w http.ResponseWriter, r *http.Request
 			return
 		}
 		conversation, err := h.conversations.Assign(r.Context(), core.AssignConversation{ConversationID: conversationID, ExpectedVersion: input.ExpectedVersion, AssigneeID: input.AssigneeID, ActorID: actorID})
-		h.writeConversationResult(w, conversation, err)
+		h.writeConversationResult(w, r, conversation, err)
 	case "status":
 		if !h.allowed(w, r, principal, PermissionConversationReply) {
 			return
@@ -79,7 +84,7 @@ func (h *HTTPHandler) conversationCommand(w http.ResponseWriter, r *http.Request
 			return
 		}
 		conversation, err := h.conversations.ChangeStatus(r.Context(), core.ChangeConversationStatus{ConversationID: conversationID, ExpectedVersion: input.ExpectedVersion, Status: input.Status, SnoozedUntil: input.SnoozedUntil, ActorID: actorID})
-		h.writeConversationResult(w, conversation, err)
+		h.writeConversationResult(w, r, conversation, err)
 	case "priority":
 		if !h.allowed(w, r, principal, PermissionConversationReply) {
 			return
@@ -96,16 +101,25 @@ func (h *HTTPHandler) conversationCommand(w http.ResponseWriter, r *http.Request
 			return
 		}
 		conversation, err := h.conversations.SetPriority(r.Context(), core.SetConversationPriority{ConversationID: conversationID, ExpectedVersion: input.ExpectedVersion, Priority: input.Priority, ActorID: actorID})
-		h.writeConversationResult(w, conversation, err)
+		h.writeConversationResult(w, r, conversation, err)
 	default:
 		writeError(w, http.StatusNotFound, "not_found")
 	}
 }
 
-func (h *HTTPHandler) writeConversationResult(w http.ResponseWriter, conversation core.Conversation, err error) {
+func (h *HTTPHandler) writeConversationResult(w http.ResponseWriter, r *http.Request, conversation core.Conversation, err error) {
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusOK, conversationResponse{ID: conversation.ID, ChannelID: conversation.ChannelID, Status: conversation.Status, Priority: conversation.Priority, ResolvedAt: conversation.ResolvedAt, SnoozedUntil: conversation.SnoozedUntil, Version: conversation.Version})
+		var assignee *conversationAssignee
+		if conversation.AssigneeID != nil {
+			user, lookupErr := h.repository.ByID(r.Context(), conversation.AssigneeID.String())
+			if lookupErr != nil {
+				writeError(w, http.StatusInternalServerError, "internal_error")
+				return
+			}
+			assignee = &conversationAssignee{ID: user.ID, Name: user.Name}
+		}
+		writeJSON(w, http.StatusOK, conversationResponse{ID: conversation.ID, ChannelID: conversation.ChannelID, Status: conversation.Status, Priority: conversation.Priority, ResolvedAt: conversation.ResolvedAt, SnoozedUntil: conversation.SnoozedUntil, Version: conversation.Version, Assignee: assignee})
 	case errors.Is(err, core.ErrConversationNotFound):
 		writeError(w, http.StatusNotFound, "conversation_not_found")
 	case errors.Is(err, core.ErrConversationForbidden):

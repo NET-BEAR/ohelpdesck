@@ -1,7 +1,7 @@
 import { Component, type FormEvent, type ReactNode, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
-import { assignConversation, getConversation, getConversationMessages, getMe, getReadiness, getWorkspace, login, logout, queueReply } from './api';
+import { assignConversation, getConversation, getConversationMessages, getMe, getReadiness, getWorkspace, login, logout, queueReply, WorkspaceActionError } from './api';
 
 export class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
@@ -84,11 +84,11 @@ function ConversationPage() {
     if (!text) return;
     const key = replyKey ?? crypto.randomUUID();
     setPending(true); setActionError(undefined);
-    try { await queueReply(id, text, key); setReplyText(''); setReplyKey(undefined); await refresh(); } catch (error) { setReplyKey(key); setActionError(error instanceof Error ? error.message : 'Не удалось сохранить изменения.'); } finally { setPending(false); }
+    try { await queueReply(id, text, key); setReplyText(''); setReplyKey(undefined); await refresh(); } catch (error) { if (error instanceof WorkspaceActionError && error.kind === 'idempotency_conflict') setReplyKey(undefined); else setReplyKey(key); setActionError(error instanceof Error ? error.message : 'Не удалось сохранить изменения.'); } finally { setPending(false); }
   }
   async function changeAssignee(assigneeID: string | null) {
     setPending(true); setActionError(undefined);
-    try { await assignConversation(id, assigneeID, conversation.version); await refresh(); } catch (error) { setActionError(error instanceof Error ? error.message : 'Не удалось сохранить изменения.'); if (error instanceof Error && error.message === 'Данные диалога устарели.') await refresh(); } finally { setPending(false); }
+    try { await assignConversation(id, assigneeID, conversation.version); await refresh(); } catch (error) { setActionError(error instanceof Error ? error.message : 'Не удалось сохранить изменения.'); if (error instanceof WorkspaceActionError && error.kind === 'stale_version') await refresh(); } finally { setPending(false); }
   }
   const canReply = conversation.capabilities.can_reply;
   const canReassign = conversation.capabilities.can_reassign;

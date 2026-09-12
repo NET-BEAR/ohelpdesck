@@ -132,6 +132,19 @@ func TestWorkspaceHTTPReadAndAssignment(t *testing.T) {
 	if second.Code != http.StatusOK || bytes.Contains(second.Body.Bytes(), []byte(page.Items[0].ID.String())) {
 		t.Fatalf("second=%d body=%s", second.Code, second.Body.String())
 	}
+	filteredFirst := request(http.MethodGet, "/api/v1/conversations?limit=1&status=open", "", false)
+	var filteredPage struct {
+		NextCursor *string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(filteredFirst.Body.Bytes(), &filteredPage); err != nil || filteredPage.NextCursor == nil {
+		t.Fatalf("filtered first=%d body=%s err=%v", filteredFirst.Code, filteredFirst.Body.String(), err)
+	}
+	if response := request(http.MethodGet, "/api/v1/conversations?limit=1&status=open&cursor="+*filteredPage.NextCursor, "", false); response.Code != http.StatusOK {
+		t.Fatalf("filtered cursor=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := request(http.MethodGet, "/api/v1/conversations?limit=1&status=pending&cursor="+*filteredPage.NextCursor, "", false); response.Code != http.StatusBadRequest {
+		t.Fatalf("mismatched filter cursor=%d body=%s", response.Code, response.Body.String())
+	}
 
 	detail := request(http.MethodGet, "/api/v1/conversations/"+inbound.ConversationID.String(), "", false)
 	if detail.Code != http.StatusOK || bytes.Contains(detail.Body.Bytes(), []byte("external_thread_id")) || !bytes.Contains(detail.Body.Bytes(), []byte(`"can_reassign":true`)) {
@@ -228,12 +241,12 @@ func TestWorkspaceHTTPReadAndAssignment(t *testing.T) {
 	if response := request(http.MethodGet, "/api/v1/conversations?assignee=me", "", false); response.Code != http.StatusOK {
 		t.Fatalf("filtered me=%d", response.Code)
 	}
-	if response := request(http.MethodPatch, "/api/v1/conversations/"+inbound.ConversationID.String()+"/assignee", `{"expected_version":1,"assignee_id":null}`, true); response.Code != http.StatusOK {
+	if response := request(http.MethodPatch, "/api/v1/conversations/"+inbound.ConversationID.String()+"/assignee", `{"expected_version":1,"assignee_id":null}`, true); response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"assignee":null`)) {
 		t.Fatalf("unassign=%d body=%s", response.Code, response.Body.String())
 	}
 
 	assign := request(http.MethodPatch, "/api/v1/conversations/"+inbound.ConversationID.String()+"/assignee", `{"expected_version":2,"assignee_id":"`+target.ID+`"}`, true)
-	if assign.Code != http.StatusOK {
+	if assign.Code != http.StatusOK || !bytes.Contains(assign.Body.Bytes(), []byte(`"assignee":{"id":"`+target.ID+`","name":"Workspace Target"}`)) {
 		t.Fatalf("assign=%d body=%s", assign.Code, assign.Body.String())
 	}
 	var version int64

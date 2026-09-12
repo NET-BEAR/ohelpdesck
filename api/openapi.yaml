@@ -330,6 +330,7 @@ paths:
         '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '403': {description: "Invalid CSRF, missing conversation.reply or Channel can_reply membership", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '409': {description: "Idempotency key was reused with a different request", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   /api/v1/conversations/{id}/assignee:
     patch:
       operationId: assignConversation
@@ -387,7 +388,6 @@ paths:
         '403': {description: "Invalid CSRF, missing conversation.reply or Channel can_reply membership", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '409': {description: Stale expected_version, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
-        '409': {description: "Idempotency key was reused with a different request", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
 components:
   securitySchemes:
     SessionCookie:
@@ -578,7 +578,7 @@ components:
     Conversation:
       type: object
       additionalProperties: false
-      required: [id, channel_id, status, priority, version]
+      required: [id, channel_id, status, priority, version, assignee]
       properties:
         id: {type: string, format: uuid}
         channel_id: {type: string, format: uuid}
@@ -587,6 +587,7 @@ components:
         resolved_at: {type: [string, 'null'], format: date-time}
         snoozed_until: {type: [string, 'null'], format: date-time}
         version: {type: integer, format: int64, minimum: 1}
+        assignee: {type: [object, 'null'], properties: {id: {type: string, format: uuid}, name: {type: string}}, required: [id, name]}
     ChangeConversationStatusRequest:
       type: object
       additionalProperties: false

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { assignConversation, getConversation, getConversationMessages, getMe, getReadiness, getWorkspace, login, logout, queueReply } from './api';
+import { assignConversation, getConversation, getConversationMessages, getMe, getReadiness, getWorkspace, login, logout, queueReply, WorkspaceActionError } from './api';
 
 afterEach(() => vi.unstubAllGlobals());
 describe('readiness client', () => {
@@ -117,5 +117,13 @@ describe('operator workspace client', () => {
     vi.stubGlobal('fetch', fetcher);
     await login('agent', 'correct horse battery staple');
     await expect(assignConversation('conversation-1', null, 3)).rejects.toThrow('Данные диалога устарели.');
+  });
+  it('distinguishes an outbound idempotency conflict from a stale version', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ csrf_token: 'z'.repeat(43) })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'idempotency_conflict' } }), { status: 409 }));
+    vi.stubGlobal('fetch', fetcher);
+    await login('agent', 'correct horse battery staple');
+    await expect(queueReply('conversation-1', 'Ответ', 'request-key')).rejects.toMatchObject({ kind: 'idempotency_conflict' } satisfies Partial<WorkspaceActionError>);
   });
 });

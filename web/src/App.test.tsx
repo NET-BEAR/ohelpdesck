@@ -106,7 +106,7 @@ it('re-reads the conversation after an assignment version conflict', async () =>
   const read = vi.spyOn(api, 'getConversation').mockResolvedValue(detail);
   vi.spyOn(api, 'getConversationMessages').mockResolvedValue({ items: [] });
   vi.spyOn(api, 'getMe').mockResolvedValue({ id: 'agent-1', login: 'agent', email: 'agent@example.test', name: 'Оператор', role: 'agent', status: 'active', permissions: [] });
-  const assign = vi.spyOn(api, 'assignConversation').mockRejectedValue(new Error('Данные диалога устарели.'));
+  const assign = vi.spyOn(api, 'assignConversation').mockRejectedValue(new api.WorkspaceActionError('stale_version', 'Данные диалога устарели.'));
   mount('/workspace/conversation-1');
   const take = await screen.findByRole('button', { name: 'Взять на себя' });
   await waitFor(() => expect((take as HTMLButtonElement).disabled).toBe(false));
@@ -126,6 +126,18 @@ it('assigns the conversation to the current operator with its version', async ()
   await waitFor(() => expect((take as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(take);
   await waitFor(() => expect(assign).toHaveBeenCalledWith('conversation-1', 'agent-1', 4));
+});
+it('shows idempotency conflict without treating it as a stale assignment', async () => {
+  const detail = { id: 'conversation-1', version: 3, assignee: null, capabilities: { can_reply: true, can_reassign: false } };
+  const read = vi.spyOn(api, 'getConversation').mockResolvedValue(detail);
+  vi.spyOn(api, 'getConversationMessages').mockResolvedValue({ items: [] });
+  vi.spyOn(api, 'queueReply').mockRejectedValue(new api.WorkspaceActionError('idempotency_conflict', 'Этот ключ ответа уже использован с другими данными. Создайте новый ответ.'));
+  mount('/workspace/conversation-1');
+  const text = await screen.findByRole('textbox', { name: 'Ответ' });
+  fireEvent.change(text, { target: { value: 'Повтор' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Отправить в очередь' }));
+  expect((await screen.findByRole('alert')).textContent).toContain('ключ ответа');
+  expect(read).toHaveBeenCalledTimes(1);
 });
 it('contains rendering errors without exposing their details', () => {
   vi.spyOn(console, 'error').mockImplementation(() => undefined);

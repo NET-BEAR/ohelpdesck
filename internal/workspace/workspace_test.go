@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"github.com/NET-BEAR/ohelpdesck/internal/core"
 	"github.com/google/uuid"
 	"testing"
 	"time"
@@ -10,12 +11,15 @@ import (
 
 func TestListCursorRoundTripAndValidation(t *testing.T) {
 	id := uuid.New()
-	raw := encodeCursor(listCursor{V: 1, Number: 42, ID: id})
+	raw := encodeCursor(listCursor{V: 2, Number: 42, ID: id, Filters: canonicalListFilters(ListQuery{Statuses: []core.ConversationStatus{core.ConversationOpen}})})
 	got, err := decodeCursor(raw)
-	if err != nil || got.Number != 42 || got.ID != id {
+	if err != nil || got.Number != 42 || got.ID != id || !matchesListCursorFilters(got, ListQuery{Statuses: []core.ConversationStatus{core.ConversationOpen}}) {
 		t.Fatalf("cursor round trip failed: %#v %v", got, err)
 	}
-	for _, bad := range []string{"not-a-cursor", encodeCursor(listCursor{V: 2, Number: 42, ID: id}), encodeCursor(listCursor{V: 1, Number: 0, ID: id})} {
+	if matchesListCursorFilters(got, ListQuery{Statuses: []core.ConversationStatus{core.ConversationPending}}) {
+		t.Fatal("cursor matched different filters")
+	}
+	for _, bad := range []string{"not-a-cursor", encodeCursor(listCursor{V: 1, Number: 42, ID: id}), encodeCursor(listCursor{V: 2, Number: 0, ID: id})} {
 		if _, err := decodeCursor(bad); err == nil {
 			t.Fatalf("invalid cursor accepted: %q", bad)
 		}

@@ -10,10 +10,13 @@ import (
 func TestParseWorkspaceListRejectsUnsafeSelectors(t *testing.T) {
 	actor := uuid.New()
 	cursor := base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"number":1,"id":"` + uuid.NewString() + `"}`))
-	for _, raw := range []string{"?sort=activity_desc", "?limit=0", "?limit=101", "?channel_id=invalid", "?assignee=also-invalid", "?cursor=" + cursor + "&status=open"} {
+	for _, raw := range []string{"?sort=activity_desc", "?limit=0", "?limit=101", "?channel_id=invalid", "?assignee=also-invalid"} {
 		if _, err := parseWorkspaceList(httptest.NewRequest("GET", "/api/v1/conversations"+raw, nil), actor); err == nil {
 			t.Fatalf("accepted invalid query %s", raw)
 		}
+	}
+	if _, err := parseWorkspaceList(httptest.NewRequest("GET", "/api/v1/conversations?cursor="+cursor+"&status=open", nil), actor); err != nil {
+		t.Fatalf("cursor with filters should parse for service validation: %v", err)
 	}
 	q, err := parseWorkspaceList(httptest.NewRequest("GET", "/api/v1/conversations?assignee=me&status=open&priority=high&channel_id="+uuid.NewString()+"&channel_id="+uuid.NewString(), nil), actor)
 	if err != nil || q.Assignee == nil || *q.Assignee != actor {

@@ -88,6 +88,9 @@ export interface ConversationDetail {
   capabilities: { can_reply: boolean; can_reassign: boolean };
 }
 export interface OutboundMessage { id: string; conversation_id: string; channel_id: string; status: string; duplicate: boolean; }
+export class WorkspaceActionError extends Error {
+  constructor(readonly kind: 'stale_version' | 'idempotency_conflict', message: string) { super(message); }
+}
 async function workspaceJSON(path: string): Promise<unknown> {
   let response: Response;
   try {
@@ -114,7 +117,12 @@ async function workspaceMutation(path: string, method: 'PATCH' | 'POST', body: u
   const result = await bodyOrError(response);
   if (response.ok) return result;
   if (response.status === 401) throw new Error('Сессия недоступна');
-  if (response.status === 409) throw new Error('Данные диалога устарели.');
+  if (response.status === 409) {
+    const code = typeof result === 'object' && result !== null && typeof (result as { error?: { code?: unknown } }).error?.code === 'string'
+      ? (result as { error: { code: string } }).error.code : '';
+    if (code === 'idempotency_conflict') throw new WorkspaceActionError('idempotency_conflict', 'Этот ключ ответа уже использован с другими данными. Создайте новый ответ.');
+    throw new WorkspaceActionError('stale_version', 'Данные диалога устарели.');
+  }
   throw new Error('Не удалось сохранить изменения.');
 }
 export async function assignConversation(id: string, assigneeID: string | null, expectedVersion: number): Promise<ConversationDetail> {
