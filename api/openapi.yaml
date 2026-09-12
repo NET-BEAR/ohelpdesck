@@ -613,7 +613,7 @@ components:
 
     MessageStatus:
       type: string
-      enum: [queued, sent, failed]
+      enum: [received, queued, sent, delivered, read, failed, unknown]
     QueueOutboundMessageRequest:
       type: object
       additionalProperties: false

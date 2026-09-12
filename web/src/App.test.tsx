@@ -60,6 +60,14 @@ it('shows loading, empty and populated operator workspaces', async () => {
   expect(conversation.getAttribute('href')).toBe('/workspace/conversation-1');
   expect(screen.getByText('Email · open · normal')).toBeDefined();
 });
+it('keeps queue filters and pagination accessible', async () => {
+  vi.spyOn(api, 'getWorkspace').mockResolvedValue({ items: [], next_cursor: 'next-page' });
+  mount('/workspace?status=open');
+  const filter = await screen.findByLabelText('Фильтр статуса');
+  fireEvent.change(filter, { target: { value: 'pending' } });
+  fireEvent.click(await screen.findByLabelText('Следующая страница'));
+  expect(await screen.findByLabelText('Предыдущая страница')).toBeDefined();
+});
 it('retries a failed operator workspace request explicitly', async () => {
   const request = vi.spyOn(api, 'getWorkspace').mockRejectedValueOnce(new Error('Сессия недоступна')).mockResolvedValue({ items: [], next_cursor: null });
   mount('/workspace');
