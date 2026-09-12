@@ -62,6 +62,10 @@ func TestWorkspaceHTTPReadAndAssignment(t *testing.T) {
 		t.Fatalf("reader-only assignment error=%v", err)
 	}
 	reads := workspace.NewService(pool)
+	readerDetail, err := reads.Detail(ctx, readerOnlyID, inbound.ConversationID, true, true)
+	if err != nil || !readerDetail.Capabilities.CanReply || readerDetail.Capabilities.CanReassign {
+		t.Fatalf("membership capability intersection=%+v err=%v", readerDetail.Capabilities, err)
+	}
 	if _, err := reads.List(ctx, operatorID, workspace.ListQuery{Limit: -1}); !errors.Is(err, workspace.ErrInvalidQuery) {
 		t.Fatalf("invalid list=%v", err)
 	}

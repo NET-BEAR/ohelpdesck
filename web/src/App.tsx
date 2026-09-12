@@ -58,11 +58,12 @@ function ProfilePage() {
 
 
 function WorkspacePage() {
-  const queue = useQuery({ queryKey: ['workspace'], queryFn: getWorkspace, retry: false, refetchInterval: 15_000 });
+  const [status, setStatus] = useState(''); const [priority, setPriority] = useState(''); const [assignee, setAssignee] = useState(''); const [cursor, setCursor] = useState(''); const [history, setHistory] = useState<string[]>([]);
+  const filters = { status, priority, assignee, cursor };
+  const queue = useQuery({ queryKey: ['workspace', filters], queryFn: () => getWorkspace(filters), retry: false, refetchInterval: 15_000 });
   if (queue.isPending) return <p role="status">Загружаем обращения…</p>;
   if (queue.isError) return <section><p role="alert">{queue.error.message}</p><button onClick={() => void queue.refetch()} disabled={queue.isFetching}>Обновить</button></section>;
-  if (queue.data.items.length === 0) return <section><h1>Обращения</h1><p>В доступных каналах обращений нет.</p></section>;
-  return <section aria-labelledby="workspace-title"><h1 id="workspace-title">Обращения</h1><button onClick={() => void queue.refetch()} disabled={queue.isFetching}>Обновить</button><ul>{queue.data.items.map(item => <li key={item.id}><Link to={`/workspace/${item.id}`}>#{item.number} · {item.contact.display_name}</Link><p>{item.channel.name} · {item.status} · {item.priority}</p></li>)}</ul></section>;
+  return <section aria-labelledby="workspace-title"><h1 id="workspace-title">Обращения</h1><fieldset aria-label="Фильтры очереди"><label>Статус<select value={status} onChange={e => { setStatus(e.target.value); setCursor(''); setHistory([]); }}><option value="">Все</option><option value="open">Открытые</option><option value="pending">В ожидании</option><option value="resolved">Решённые</option></select></label><label>Приоритет<select value={priority} onChange={e => { setPriority(e.target.value); setCursor(''); setHistory([]); }}><option value="">Все</option><option value="high">Высокий</option><option value="urgent">Срочный</option></select></label><label>Назначение<select value={assignee} onChange={e => { setAssignee(e.target.value); setCursor(''); setHistory([]); }}><option value="">Все</option><option value="me">На мне</option><option value="unassigned">Без назначения</option></select></label></fieldset><button onClick={() => void queue.refetch()} disabled={queue.isFetching}>Обновить</button>{queue.data.items.length === 0 ? <p aria-live="polite">В доступных каналах обращений нет.</p> : <ul>{queue.data.items.map(item => <li key={item.id}><Link to={`/workspace/${item.id}`}>#{item.number} · {item.contact.display_name}</Link><p>{item.channel.name} · {item.status} · {item.priority}</p></li>)}</ul>}<nav aria-label="Страницы очереди"><button disabled={history.length === 0} onClick={() => { const next = history.at(-1) ?? ''; setHistory(history.slice(0, -1)); setCursor(next); }}>Назад</button><button disabled={!queue.data.next_cursor} onClick={() => { setHistory([...history, cursor]); setCursor(queue.data.next_cursor ?? ''); }}>Далее</button></nav></section>;
 }
 function ConversationPage() {
   const { id = '' } = useParams<{ id: string }>();

@@ -102,7 +102,7 @@ async function workspaceJSON(path: string): Promise<unknown> {
   if (!response.ok) throw new Error(response.status === 401 ? 'Сессия недоступна' : 'Не удалось загрузить обращения');
   return body;
 }
-export async function getWorkspace(): Promise<WorkspacePage> { const body = await workspaceJSON('/api/v1/conversations'); if (typeof body !== 'object' || body === null || !Array.isArray((body as Record<string, unknown>).items)) throw new Error('Некорректный ответ API'); return body as WorkspacePage; }
+export async function getWorkspace(query: Record<string, string> = {}): Promise<WorkspacePage> { const params = new URLSearchParams(Object.entries(query).filter(([, value]) => value)); const body = await workspaceJSON(`/api/v1/conversations${params.size ? `?${params}` : ''}`); if (typeof body !== 'object' || body === null || !Array.isArray((body as Record<string, unknown>).items)) throw new Error('Некорректный ответ API'); return body as WorkspacePage; }
 export async function getConversation(id: string): Promise<ConversationDetail> { return workspaceJSON(`/api/v1/conversations/${encodeURIComponent(id)}`) as Promise<ConversationDetail>; }
 export async function getConversationMessages(id: string): Promise<unknown> { return workspaceJSON(`/api/v1/conversations/${encodeURIComponent(id)}/messages`); }
 

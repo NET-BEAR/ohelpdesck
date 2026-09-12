@@ -269,7 +269,8 @@ func (s *Service) Detail(ctx context.Context, actor, id uuid.UUID, canReply, can
 	var d Detail
 	var aid *uuid.UUID
 	var aname *string
-	err := s.db.QueryRow(ctx, `SELECT c.id,c.number,ch.id,ch.name,ch.type,CASE WHEN ch.enabled THEN 'active' ELSE 'disabled' END,ct.id,ct.name,a.id,a.name,c.status,c.priority,c.waiting_since,c.last_activity_at,c.version,c.subject,c.first_response_at,c.last_inbound_at,c.last_outbound_at,c.resolved_at,c.snoozed_until FROM conversations c JOIN channels ch ON ch.id=c.channel_id JOIN contacts ct ON ct.id=c.contact_id LEFT JOIN users a ON a.id=c.assignee_id WHERE c.id=$1 AND EXISTS (SELECT 1 FROM channel_memberships cm WHERE cm.channel_id=c.channel_id AND cm.user_id=$2 AND cm.can_read)`, id, actor).Scan(&d.ID, &d.Number, &d.Channel.ID, &d.Channel.Name, &d.Channel.Type, &d.Channel.Status, &d.Contact.ID, &d.Contact.DisplayName, &aid, &aname, &d.Status, &d.Priority, &d.WaitingSince, &d.LastActivityAt, &d.Version, &d.Subject, &d.FirstResponseAt, &d.LastInboundAt, &d.LastOutboundAt, &d.ResolvedAt, &d.SnoozedUntil)
+	var memberCanReply, memberCanReassign bool
+	err := s.db.QueryRow(ctx, `SELECT c.id,c.number,ch.id,ch.name,ch.type,CASE WHEN ch.enabled THEN 'active' ELSE 'disabled' END,ct.id,ct.name,a.id,a.name,c.status,c.priority,c.waiting_since,c.last_activity_at,c.version,c.subject,c.first_response_at,c.last_inbound_at,c.last_outbound_at,c.resolved_at,c.snoozed_until,cm.can_reply,cm.can_reassign FROM conversations c JOIN channels ch ON ch.id=c.channel_id JOIN contacts ct ON ct.id=c.contact_id JOIN channel_memberships cm ON cm.channel_id=c.channel_id AND cm.user_id=$2 AND cm.can_read LEFT JOIN users a ON a.id=c.assignee_id WHERE c.id=$1`, id, actor).Scan(&d.ID, &d.Number, &d.Channel.ID, &d.Channel.Name, &d.Channel.Type, &d.Channel.Status, &d.Contact.ID, &d.Contact.DisplayName, &aid, &aname, &d.Status, &d.Priority, &d.WaitingSince, &d.LastActivityAt, &d.Version, &d.Subject, &d.FirstResponseAt, &d.LastInboundAt, &d.LastOutboundAt, &d.ResolvedAt, &d.SnoozedUntil, &memberCanReply, &memberCanReassign)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var exists bool
 		e := s.db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM conversations WHERE id=$1)", id).Scan(&exists)
@@ -287,7 +288,7 @@ func (s *Service) Detail(ctx context.Context, actor, id uuid.UUID, canReply, can
 	if aid != nil {
 		d.Assignee = &UserSummary{ID: *aid, Name: *aname}
 	}
-	d.Capabilities = Capabilities{CanReply: canReply, CanReassign: canReassign}
+	d.Capabilities = Capabilities{CanReply: canReply && memberCanReply, CanReassign: canReassign && memberCanReassign}
 	return d, nil
 }
 

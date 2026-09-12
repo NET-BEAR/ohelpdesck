@@ -557,13 +557,20 @@ components:
     ConversationListItem:
       type: object
       required: [id, number, channel, contact, status, priority, last_activity_at, version]
-      properties: {id: {type: string, format: uuid}, number: {type: integer, format: int64}, channel: {type: object}, contact: {type: object}, assignee: {type: [object, 'null']}, status: {$ref: '#/components/schemas/ConversationStatus'}, priority: {$ref: '#/components/schemas/ConversationPriority'}, waiting_since: {type: [string, 'null'], format: date-time}, last_activity_at: {type: string, format: date-time}, version: {type: integer, format: int64}}
+      properties: {id: {type: string, format: uuid}, number: {type: integer, format: int64}, channel: {$ref: '#/components/schemas/WorkspaceChannel'}, contact: {$ref: '#/components/schemas/WorkspaceContact'}, assignee: {$ref: '#/components/schemas/WorkspaceUserNullable'}, status: {$ref: '#/components/schemas/ConversationStatus'}, priority: {$ref: '#/components/schemas/ConversationPriority'}, waiting_since: {type: [string, 'null'], format: date-time}, last_activity_at: {type: string, format: date-time}, last_message: {$ref: '#/components/schemas/MessagePreviewNullable'}, version: {type: integer, format: int64}}
     ConversationDetail:
       allOf: [{$ref: '#/components/schemas/ConversationListItem'}]
+      properties: {subject: {type: [string, 'null']}, first_response_at: {type: [string, 'null'], format: date-time}, last_inbound_at: {type: [string, 'null'], format: date-time}, last_outbound_at: {type: [string, 'null'], format: date-time}, resolved_at: {type: [string, 'null'], format: date-time}, snoozed_until: {type: [string, 'null'], format: date-time}, capabilities: {type: object, required: [can_reply, can_reassign], properties: {can_reply: {type: boolean}, can_reassign: {type: boolean}}}}
     MessagePage:
       type: object
       required: [items]
-      properties: {items: {type: array, items: {type: object}}, previous_cursor: {type: [string, 'null']}, next_cursor: {type: [string, 'null']}}
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/TimelineMessage'}}, previous_cursor: {type: [string, 'null']}, next_cursor: {type: [string, 'null']}}
+    WorkspaceUser: {type: object, required: [id, name], properties: {id: {type: string, format: uuid}, name: {type: string}}}
+    WorkspaceUserNullable: {type: [object, 'null'], properties: {id: {type: string, format: uuid}, name: {type: string}}}
+    WorkspaceChannel: {type: object, required: [id, name, type, status], properties: {id: {type: string, format: uuid}, name: {type: string}, type: {type: string}, status: {type: string}}}
+    WorkspaceContact: {type: object, required: [id, display_name], properties: {id: {type: string, format: uuid}, display_name: {type: string}}}
+    MessagePreviewNullable: {type: [object, 'null'], properties: {id: {type: string, format: uuid}, direction: {type: string}, status: {$ref: '#/components/schemas/MessageStatus'}, preview: {type: string}, created_at: {type: string, format: date-time}}}
+    TimelineMessage: {type: object, required: [id, conversation_id, direction, actor, content, status, created_at], properties: {id: {type: string, format: uuid}, conversation_id: {type: string, format: uuid}, direction: {type: string}, actor: {type: object, required: [type], properties: {type: {type: string}, user: {$ref: '#/components/schemas/WorkspaceUserNullable'}}}, content: {type: object, required: [type], properties: {type: {type: string}, text: {type: [string, 'null']}, html: {type: [string, 'null']}}}, status: {$ref: '#/components/schemas/MessageStatus'}, created_at: {type: string, format: date-time}, queued_at: {type: [string, 'null'], format: date-time}, sent_at: {type: [string, 'null'], format: date-time}, delivered_at: {type: [string, 'null'], format: date-time}, reply_to_message_id: {type: [string, 'null'], format: uuid}, failed: {type: [object, 'null'], properties: {code: {type: string}}}}}
     AssignmentRequest:
       type: object
       additionalProperties: false
