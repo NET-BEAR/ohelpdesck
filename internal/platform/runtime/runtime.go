@@ -39,10 +39,10 @@ func RunWorkerWithRegistry(ctx context.Context, register WorkerRegistration) err
 	return run(ctx, true, register)
 }
 
-func closeWithin(timeout time.Duration, close func()) {
+func closeWithin(timeout time.Duration, closer func()) {
 	done := make(chan struct{})
 	go func() {
-		close()
+		closer()
 		close(done)
 	}()
 	select {
