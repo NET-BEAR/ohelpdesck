@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/base64"
 	"github.com/google/uuid"
 	"net/http/httptest"
 	"testing"
@@ -8,7 +9,8 @@ import (
 
 func TestParseWorkspaceListRejectsUnsafeSelectors(t *testing.T) {
 	actor := uuid.New()
-	for _, raw := range []string{"?sort=activity_desc", "?limit=0", "?limit=101", "?channel_id=invalid", "?assignee=also-invalid"} {
+	cursor := base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"number":1,"id":"` + uuid.NewString() + `"}`))
+	for _, raw := range []string{"?sort=activity_desc", "?limit=0", "?limit=101", "?channel_id=invalid", "?assignee=also-invalid", "?cursor=" + cursor + "&status=open"} {
 		if _, err := parseWorkspaceList(httptest.NewRequest("GET", "/api/v1/conversations"+raw, nil), actor); err == nil {
 			t.Fatalf("accepted invalid query %s", raw)
 		}

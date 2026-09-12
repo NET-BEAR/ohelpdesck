@@ -76,6 +76,9 @@ func parseWorkspaceList(r *http.Request, actor uuid.UUID) (workspace.ListQuery, 
 			q.Assignee = &id
 		}
 	}
+	if q.Cursor != "" && (len(q.ChannelIDs) > 0 || len(q.Statuses) > 0 || len(q.Priorities) > 0 || q.Assignee != nil || q.Unassigned) {
+		return q, workspace.ErrInvalidQuery
+	}
 	return q, nil
 }
 

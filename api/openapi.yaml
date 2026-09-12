@@ -271,7 +271,7 @@ paths:
       operationId: listConversations
       security: [{SessionCookie: []}]
       parameters:
-        - {name: cursor, in: query, schema: {type: string, maxLength: 512}}
+        - {name: cursor, in: query, description: "Opaque continuation cursor. Must be omitted when channel_id, status, priority or assignee filters are supplied.", schema: {type: string, maxLength: 512}}
         - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
         - {name: sort, in: query, schema: {type: string, enum: [number_desc]}}
         - {name: channel_id, in: query, schema: {type: string, format: uuid}}
@@ -307,6 +307,28 @@ paths:
         '400': {description: Invalid cursor, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '403': {description: Missing conversation.read or channel membership, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    post:
+      operationId: queueOutboundMessage
+      security: [{SessionCookie: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QueueOutboundMessageRequest'}
+      responses:
+        '201': {description: Queued outbound Message created, content: {application/json: {schema: {$ref: '#/components/schemas/OutboundMessage'}}}}
+        '200': {description: Canonical Message returned for an equivalent retry, content: {application/json: {schema: {$ref: '#/components/schemas/OutboundMessage'}}}}
+        '400': {description: "Invalid JSON, missing Idempotency-Key or empty content", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: "Invalid CSRF, missing conversation.reply or Channel can_reply membership", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
   /api/v1/conversations/{id}/assignee:
     patch:
@@ -365,29 +387,6 @@ paths:
         '403': {description: "Invalid CSRF, missing conversation.reply or Channel can_reply membership", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '409': {description: Stale expected_version, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
-  /api/v1/conversations/{id}/messages:
-    post:
-      operationId: queueOutboundMessage
-      security: [{SessionCookie: []}]
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema: {type: string, format: uuid}
-        - $ref: '#/components/parameters/CSRFToken'
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/QueueOutboundMessageRequest'}
-      responses:
-        '201': {description: Queued outbound Message created, content: {application/json: {schema: {$ref: '#/components/schemas/OutboundMessage'}}}}
-        '200': {description: Canonical Message returned for an equivalent retry, content: {application/json: {schema: {$ref: '#/components/schemas/OutboundMessage'}}}}
-        '400': {description: "Invalid JSON, missing Idempotency-Key or empty content", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
-        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
-        '403': {description: "Invalid CSRF, missing conversation.reply or Channel can_reply membership", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
-        '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '409': {description: "Idempotency key was reused with a different request", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
 components:
   securitySchemes:

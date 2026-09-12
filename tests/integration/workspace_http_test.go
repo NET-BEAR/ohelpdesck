@@ -194,6 +194,9 @@ func TestWorkspaceHTTPReadAndAssignment(t *testing.T) {
 	if err := json.Unmarshal(firstTimeline.Body.Bytes(), &timelinePage); err != nil || len(timelinePage.Items) != 1 {
 		t.Fatalf("timeline page=%s err=%v", firstTimeline.Body.String(), err)
 	}
+	if timelinePage.Items[0].ID != failed.ID || timelinePage.PreviousCursor == nil {
+		t.Fatalf("initial timeline must return latest window: %+v latest=%s", timelinePage, failed.ID)
+	}
 	if timelinePage.NextCursor != nil {
 		if response := request(http.MethodGet, "/api/v1/conversations/"+inbound.ConversationID.String()+"/messages?after="+*timelinePage.NextCursor+"&limit=1", "", false); response.Code != http.StatusOK {
 			_, directErr := workspace.NewService(pool).Messages(ctx, operatorID, inbound.ConversationID, "", *timelinePage.NextCursor, 1)

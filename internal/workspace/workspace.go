@@ -136,6 +136,9 @@ func (s *Service) List(ctx context.Context, actor uuid.UUID, q ListQuery) (Page,
 	if e != nil {
 		return Page{}, e
 	}
+	if c != nil && (len(q.ChannelIDs) > 0 || len(q.Statuses) > 0 || len(q.Priorities) > 0 || q.Assignee != nil || q.Unassigned) {
+		return Page{}, ErrInvalidQuery
+	}
 	for _, v := range q.Statuses {
 		if !validStatus(v) {
 			return Page{}, ErrInvalidQuery
@@ -347,6 +350,10 @@ func (s *Service) Messages(ctx context.Context, actor, conversationID uuid.UUID,
 	args := []any{conversationID}
 	where := "m.conversation_id=$1"
 	direction := "ASC"
+	latest := bc == nil && ac == nil
+	if latest {
+		direction = "DESC"
+	}
 	if bc != nil {
 		args = append(args, bc.CreatedAt, bc.ID)
 		where += " AND (m.created_at,m.id) < ($2,$3)"
@@ -384,14 +391,14 @@ func (s *Service) Messages(ctx context.Context, actor, conversationID uuid.UUID,
 	if e = rows.Err(); e != nil {
 		return MessagePage{}, fmt.Errorf("workspace messages rows: %w", e)
 	}
-	if bc != nil {
+	if bc != nil || latest {
 		for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
 			items[i], items[j] = items[j], items[i]
 		}
 	}
 	page := MessagePage{Items: items}
 	if len(items) > limit {
-		if bc != nil {
+		if bc != nil || latest {
 			items = items[1:]
 			page.Items = items
 		} else {
@@ -402,7 +409,7 @@ func (s *Service) Messages(ctx context.Context, actor, conversationID uuid.UUID,
 			last := page.Items[len(page.Items)-1]
 			p := encodeMessageCursor(messageCursor{V: 1, CreatedAt: first.CreatedAt, ID: first.ID})
 			n := encodeMessageCursor(messageCursor{V: 1, CreatedAt: last.CreatedAt, ID: last.ID})
-			if bc != nil {
+			if bc != nil || latest {
 				page.PreviousCursor = &p
 			} else {
 				page.NextCursor = &n
