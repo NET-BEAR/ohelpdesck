@@ -35,19 +35,28 @@ func TestFoundation(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer p.Close()
-	for _, d := range []string{"down", "status", "up", "up", "status"} {
-		v, e := p.Migrate(ctx, d)
+	// A migration cycle verifies idempotent up and the new reversible v10.
+	for _, step := range []struct {
+		direction string
+		want      int
+	}{
+		{direction: "down", want: 9},
+		{direction: "status", want: 9},
+		{direction: "up", want: 10},
+		{direction: "up", want: 10},
+		{direction: "status", want: 10},
+	} {
+		v, e := p.Migrate(ctx, step.direction)
 		if e != nil {
 			t.Fatal(e)
 		}
-		want := 9
-		if d == "down" || (d == "status" && v == 8) {
-			want = 8
-		}
-		if (d == "up" || d == "status" && v != 0) && v != want {
-			t.Fatalf("migration %s: got %d want %d", d, v, want)
+		if v != step.want {
+			t.Fatalf("migration %s: got %d want %d", step.direction, v, step.want)
 		}
 	}
+	if _, e = p.Migrate(ctx, "down"); e != nil {
+		t.Fatal(e)
+	} // rollback v10
 	if _, e = p.Migrate(ctx, "down"); e != nil {
 		t.Fatal(e)
 	} // rollback v9
@@ -63,12 +72,12 @@ func TestFoundation(t *testing.T) {
 	if v, e := p.Migrate(ctx, "status"); e != nil || v != 6 {
 		t.Fatalf("irreversible migration state=%d err=%v", v, e)
 	}
-	for range 3 {
+	for range 4 {
 		if _, e = p.Migrate(ctx, "up"); e != nil {
 			t.Fatal(e)
 		}
 	}
-	if v, e := p.Migrate(ctx, "status"); e != nil || v != 9 {
+	if v, e := p.Migrate(ctx, "status"); e != nil || v != 10 {
 		t.Fatalf("restored migration state=%d err=%v", v, e)
 	}
 	if _, e = p.Migrate(ctx, "invalid"); e == nil {
