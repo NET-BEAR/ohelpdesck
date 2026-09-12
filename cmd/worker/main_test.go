@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -28,6 +29,24 @@ func TestMissingConfig(t *testing.T) {
 	if e == nil || !bytes.Contains(out, []byte("DATABASE_URL")) {
 		t.Fatalf("expected safe missing-field message; got %s", out)
 	}
+}
+
+func replaceEnvironment(base []string, overrides ...string) []string {
+	env := append([]string(nil), base...)
+	for _, override := range overrides {
+		key, _, found := strings.Cut(override, "=")
+		if !found {
+			continue
+		}
+		filtered := env[:0]
+		for _, value := range env {
+			if !strings.HasPrefix(value, key+"=") {
+				filtered = append(filtered, value)
+			}
+		}
+		env = append(filtered, override)
+	}
+	return env
 }
 
 type sigtermBlockedHandler struct {
@@ -75,9 +94,10 @@ func TestWorkerSIGTERMBoundedShutdownAndLeaseRecovery(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM outbox_events WHERE id=$1`, eventID) })
 
+	const shutdownGrace = 100 * time.Millisecond
 	readyPath := filepath.Join(t.TempDir(), "handler-started")
 	cmd := exec.Command(os.Args[0], "-test.run=TestWorkerSIGTERMHelper")
-	cmd.Env = append(os.Environ(), "WORKER_SIGTERM_HELPER=1", "WORKER_SIGTERM_READY_PATH="+readyPath, "SHUTDOWN_TIMEOUT=100ms", "METRICS_ADDRESS=127.0.0.1:0")
+	cmd.Env = replaceEnvironment(os.Environ(), "WORKER_SIGTERM_HELPER=1", "WORKER_SIGTERM_READY_PATH="+readyPath, "SHUTDOWN_TIMEOUT="+shutdownGrace.String(), "METRICS_ADDRESS=127.0.0.1:0")
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
@@ -112,10 +132,12 @@ func TestWorkerSIGTERMBoundedShutdownAndLeaseRecovery(t *testing.T) {
 		if processErr != nil {
 			t.Fatalf("worker SIGTERM exit=%v output=%s", processErr, output.String())
 		}
-		if elapsed := time.Since(start); elapsed > time.Second {
-			t.Fatalf("worker exceeded shutdown bound: %s", elapsed)
+		// Runtime has three independently bounded shutdown phases (server, pool,
+		// telemetry), so the assertion is derived from the configured grace.
+		if elapsed := time.Since(start); elapsed > 4*shutdownGrace {
+			t.Fatalf("worker exceeded configured shutdown bound: %s", elapsed)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(4 * shutdownGrace):
 		_ = cmd.Process.Kill()
 		<-exited
 		t.Fatal("worker ignored SIGTERM")
