@@ -66,15 +66,23 @@ func TestWorkerSIGTERMHelper(t *testing.T) {
 	if os.Getenv("WORKER_SIGTERM_HELPER") != "1" {
 		return
 	}
-	readyPath := os.Getenv("WORKER_SIGTERM_READY_PATH")
-	if readyPath == "" {
+	readyPath, returnedPath, signalPath := os.Getenv("WORKER_SIGTERM_READY_PATH"), os.Getenv("WORKER_SIGTERM_RETURNED_PATH"), os.Getenv("WORKER_SIGTERM_SIGNAL_PATH")
+	if readyPath == "" || returnedPath == "" || signalPath == "" {
 		os.Exit(2)
 	}
-	os.Exit(runWorker(func(ctx context.Context) error {
+	exitCode := runWorker(func(ctx context.Context) error {
+		go func() {
+			<-ctx.Done()
+			_ = os.WriteFile(signalPath, []byte("signal-observed"), 0o600)
+		}()
 		return runtime.RunWorkerWithRegistry(ctx, func(registry *jobs.Registry) error {
 			return registry.Register(jobs.Route{EventType: "worker.sigterm", Handler: "worker.sigterm.blocked"}, sigtermBlockedHandler{readyPath: readyPath})
 		})
-	}))
+	})
+	if err := os.WriteFile(returnedPath, []byte("runtime-returned"), 0o600); err != nil {
+		os.Exit(2)
+	}
+	os.Exit(exitCode)
 }
 
 func TestWorkerSIGTERMBoundedShutdownAndLeaseRecovery(t *testing.T) {
@@ -95,9 +103,10 @@ func TestWorkerSIGTERMBoundedShutdownAndLeaseRecovery(t *testing.T) {
 	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM outbox_events WHERE id=$1`, eventID) })
 
 	const shutdownGrace = 100 * time.Millisecond
-	readyPath := filepath.Join(t.TempDir(), "handler-started")
+	tempDir := t.TempDir()
+	readyPath, returnedPath, signalPath := filepath.Join(tempDir, "handler-started"), filepath.Join(tempDir, "runtime-returned"), filepath.Join(tempDir, "signal-observed")
 	cmd := exec.Command(os.Args[0], "-test.run=TestWorkerSIGTERMHelper")
-	cmd.Env = replaceEnvironment(os.Environ(), "WORKER_SIGTERM_HELPER=1", "WORKER_SIGTERM_READY_PATH="+readyPath, "SHUTDOWN_TIMEOUT="+shutdownGrace.String(), "METRICS_ADDRESS=127.0.0.1:0")
+	cmd.Env = replaceEnvironment(os.Environ(), "WORKER_SIGTERM_HELPER=1", "WORKER_SIGTERM_READY_PATH="+readyPath, "WORKER_SIGTERM_RETURNED_PATH="+returnedPath, "WORKER_SIGTERM_SIGNAL_PATH="+signalPath, "SHUTDOWN_TIMEOUT="+shutdownGrace.String(), "METRICS_ADDRESS=127.0.0.1:0")
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
@@ -127,20 +136,38 @@ func TestWorkerSIGTERMBoundedShutdownAndLeaseRecovery(t *testing.T) {
 	if err = cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
+	returnedDeadline := time.After(4 * shutdownGrace)
+	for {
+		if _, statErr := os.Stat(returnedPath); statErr == nil {
+			break
+		}
+		select {
+		case processErr := <-exited:
+			t.Fatalf("worker exited before runtime return: %v %s", processErr, output.String())
+		case <-returnedDeadline:
+			_, signalErr := os.Stat(signalPath)
+			_ = cmd.Process.Kill()
+			<-exited
+			if signalErr != nil {
+				t.Fatal("worker process did not observe SIGTERM")
+			}
+			t.Fatal("worker runtime did not return after observed SIGTERM")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if elapsed := time.Since(start); elapsed > 4*shutdownGrace {
+		t.Fatalf("runtime exceeded configured shutdown bound: %s", elapsed)
+	}
 	select {
 	case processErr := <-exited:
 		if processErr != nil {
 			t.Fatalf("worker SIGTERM exit=%v output=%s", processErr, output.String())
 		}
-		// Runtime has three independently bounded shutdown phases (server, pool,
-		// telemetry), so the assertion is derived from the configured grace.
-		if elapsed := time.Since(start); elapsed > 4*shutdownGrace {
-			t.Fatalf("worker exceeded configured shutdown bound: %s", elapsed)
-		}
-	case <-time.After(4 * shutdownGrace):
+	case <-time.After(time.Second):
 		_ = cmd.Process.Kill()
 		<-exited
-		t.Fatal("worker ignored SIGTERM")
+		t.Fatal("worker process did not exit after bounded runtime shutdown")
 	}
 	var status jobs.Status
 	if err = pool.QueryRow(ctx, `SELECT status FROM jobs WHERE event_id=$1 AND handler='worker.sigterm.blocked'`, eventID).Scan(&status); err != nil || status != jobs.Running {
