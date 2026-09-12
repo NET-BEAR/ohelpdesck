@@ -40,3 +40,13 @@ func TestCloseWithinCompletesOrHonorsDeadline(t *testing.T) {
 	}
 	close(release)
 }
+
+func TestRunWorkerWithRegistryRequiresRegistration(t *testing.T) {
+	err := RunWorkerWithRegistry(context.Background(), nil)
+	if err == nil {
+		t.Fatal("RunWorkerWithRegistry accepted nil registration")
+	}
+	if got, want := err.Error(), "worker registration is required"; got != want {
+		t.Fatalf("registration error = %q, want %q", got, want)
+	}
+}
