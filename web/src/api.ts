@@ -81,7 +81,17 @@ export async function logout(): Promise<void> {
 
 export interface WorkspaceItem { id: string; number: number; channel: { id: string; name: string; type: string; status: string }; contact: { id: string; display_name: string }; assignee: { id: string; name: string } | null; status: string; priority: string; waiting_since: string | null; last_activity_at: string; version: number; }
 export interface WorkspacePage { items: WorkspaceItem[]; next_cursor: string | null; }
-async function workspaceJSON(path: string): Promise<unknown> { const response = await fetch(path, { credentials: 'same-origin', signal: AbortSignal.timeout(5000), headers: { Accept: 'application/json' } }); const body = await bodyOrError(response); if (!response.ok) throw new Error(response.status === 401 ? 'Сессия недоступна' : 'Не удалось загрузить обращения'); return body; }
+async function workspaceJSON(path: string): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await fetch(path, { credentials: 'same-origin', signal: AbortSignal.timeout(5000), headers: { Accept: 'application/json' } });
+  } catch {
+    throw new Error('Не удалось связаться с API');
+  }
+  const body = await bodyOrError(response);
+  if (!response.ok) throw new Error(response.status === 401 ? 'Сессия недоступна' : 'Не удалось загрузить обращения');
+  return body;
+}
 export async function getWorkspace(): Promise<WorkspacePage> { const body = await workspaceJSON('/api/v1/conversations'); if (typeof body !== 'object' || body === null || !Array.isArray((body as Record<string, unknown>).items)) throw new Error('Некорректный ответ API'); return body as WorkspacePage; }
 export async function getConversation(id: string): Promise<unknown> { return workspaceJSON(`/api/v1/conversations/${encodeURIComponent(id)}`); }
 export async function getConversationMessages(id: string): Promise<unknown> { return workspaceJSON(`/api/v1/conversations/${encodeURIComponent(id)}/messages`); }

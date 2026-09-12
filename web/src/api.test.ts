@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getMe, getReadiness, login, logout } from './api';
+import { getConversation, getConversationMessages, getMe, getReadiness, getWorkspace, login, logout } from './api';
 
 afterEach(() => vi.unstubAllGlobals());
 describe('readiness client', () => {
@@ -68,5 +68,36 @@ describe('local-password session client', () => {
     await expect(getMe()).resolves.toMatchObject({ login: 'sysadmin' });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'id' }))));
     await expect(getMe()).rejects.toThrow('Сессия недоступна');
+  });
+});
+
+describe('operator workspace client', () => {
+  it('loads the queue through the authenticated conversation contract', async () => {
+    const page = { items: [], next_cursor: null };
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(page)));
+    vi.stubGlobal('fetch', fetcher);
+    await expect(getWorkspace()).resolves.toEqual(page);
+    expect(fetcher).toHaveBeenCalledWith('/api/v1/conversations', expect.objectContaining({ credentials: 'same-origin', headers: { Accept: 'application/json' } }));
+  });
+  it('encodes a conversation identifier in detail and message URLs', async () => {
+    const fetcher = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ id: 'conversation' }))));
+    vi.stubGlobal('fetch', fetcher);
+    await expect(getConversation('a/b')).resolves.toEqual({ id: 'conversation' });
+    await expect(getConversationMessages('a/b')).resolves.toEqual({ id: 'conversation' });
+    expect(fetcher).toHaveBeenNthCalledWith(1, '/api/v1/conversations/a%2Fb', expect.anything());
+    expect(fetcher).toHaveBeenNthCalledWith(2, '/api/v1/conversations/a%2Fb/messages', expect.anything());
+  });
+  it.each([
+    [401, 'Сессия недоступна'],
+    [500, 'Не удалось загрузить обращения'],
+  ])('normalizes workspace HTTP %i failures', async (status, message) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { detail: 'internal detail' } }), { status })));
+    await expect(getWorkspace()).rejects.toThrow(message);
+  });
+  it('normalizes workspace network and malformed-contract failures', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('internal network detail')));
+    await expect(getWorkspace()).rejects.toThrow('Не удалось связаться с API');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ next_cursor: null }))));
+    await expect(getWorkspace()).rejects.toThrow('Некорректный ответ API');
   });
 });
