@@ -52,9 +52,13 @@ func replaceEnvironment(base []string, overrides ...string) []string {
 
 type sigtermBlockedHandler struct {
 	readyPath string
+	eventID   uuid.UUID
 }
 
-func (h sigtermBlockedHandler) Handle(context.Context, pgx.Tx, jobs.DomainEvent) error {
+func (h sigtermBlockedHandler) Handle(_ context.Context, _ pgx.Tx, event jobs.DomainEvent) error {
+	if event.ID != h.eventID {
+		return nil
+	}
 	if err := os.WriteFile(h.readyPath, []byte("started"), 0o600); err != nil {
 		return err
 	}
@@ -67,8 +71,9 @@ func TestWorkerSIGTERMHelper(t *testing.T) {
 	if os.Getenv("WORKER_SIGTERM_HELPER") != "1" {
 		return
 	}
-	readyPath, returnedPath, signalPath := os.Getenv("WORKER_SIGTERM_READY_PATH"), os.Getenv("WORKER_SIGTERM_RETURNED_PATH"), os.Getenv("WORKER_SIGTERM_SIGNAL_PATH")
-	if readyPath == "" || returnedPath == "" || signalPath == "" {
+	readyPath, returnedPath, signalPath, eventText := os.Getenv("WORKER_SIGTERM_READY_PATH"), os.Getenv("WORKER_SIGTERM_RETURNED_PATH"), os.Getenv("WORKER_SIGTERM_SIGNAL_PATH"), os.Getenv("WORKER_SIGTERM_EVENT_ID")
+	eventID, parseErr := uuid.Parse(eventText)
+	if readyPath == "" || returnedPath == "" || signalPath == "" || parseErr != nil {
 		os.Exit(2)
 	}
 	exitCode := runWorker(func(ctx context.Context) error {
@@ -77,7 +82,7 @@ func TestWorkerSIGTERMHelper(t *testing.T) {
 			_ = os.WriteFile(signalPath, []byte("signal-observed"), 0o600)
 		}()
 		return runtime.RunWorkerWithRegistry(ctx, func(registry *jobs.Registry) error {
-			return registry.Register(jobs.Route{EventType: "worker.sigterm", Handler: "worker.sigterm.blocked"}, sigtermBlockedHandler{readyPath: readyPath})
+			return registry.Register(jobs.Route{EventType: "worker.sigterm", Handler: "worker.sigterm.blocked"}, sigtermBlockedHandler{readyPath: readyPath, eventID: eventID})
 		})
 	})
 	if err := os.WriteFile(returnedPath, []byte("runtime-returned"), 0o600); err != nil {
@@ -107,7 +112,7 @@ func TestWorkerSIGTERMBoundedShutdownAndLeaseRecovery(t *testing.T) {
 	tempDir := t.TempDir()
 	readyPath, returnedPath, signalPath := filepath.Join(tempDir, "handler-started"), filepath.Join(tempDir, "runtime-returned"), filepath.Join(tempDir, "signal-observed")
 	cmd := exec.Command(os.Args[0], "-test.run=TestWorkerSIGTERMHelper")
-	cmd.Env = replaceEnvironment(os.Environ(), "WORKER_SIGTERM_HELPER=1", "WORKER_SIGTERM_READY_PATH="+readyPath, "WORKER_SIGTERM_RETURNED_PATH="+returnedPath, "WORKER_SIGTERM_SIGNAL_PATH="+signalPath, "SHUTDOWN_TIMEOUT="+shutdownGrace.String(), "METRICS_ADDRESS=127.0.0.1:0")
+	cmd.Env = replaceEnvironment(os.Environ(), "WORKER_SIGTERM_HELPER=1", "WORKER_SIGTERM_READY_PATH="+readyPath, "WORKER_SIGTERM_RETURNED_PATH="+returnedPath, "WORKER_SIGTERM_SIGNAL_PATH="+signalPath, "WORKER_SIGTERM_EVENT_ID="+eventID.String(), "SHUTDOWN_TIMEOUT="+shutdownGrace.String(), "METRICS_ADDRESS=127.0.0.1:0")
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
