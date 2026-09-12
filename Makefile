@@ -47,7 +47,7 @@ migrate-status:
 generate:
 	@echo 'No generated source code in SPEC-000; api/openapi.yaml is maintained explicitly.'
 openapi-check:
-	docker run --rm -v "$(CURDIR):/src:ro" -w /src python:3.12.12-slim sh -ec 'pip install --quiet --disable-pip-version-check openapi-spec-validator==0.7.2 && python deploy/validate_openapi.py'
+	docker run --rm -v "$(CURDIR):/src:ro" -w /src python:3.12.12-slim sh -ec 'pip install --quiet --disable-pip-version-check openapi-spec-validator==0.7.2 && python deploy/validate_openapi.py && python deploy/test_workspace_openapi_contract.py'
 test-delivery:
 	bash -n deploy/receive-deploy.sh deploy/remote-apply.sh deploy/smoke.sh
 	docker run --rm -v "$(CURDIR):/src:ro" -w /src python:3.12.12-slim python deploy/test_delivery.py
