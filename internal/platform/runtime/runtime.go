@@ -39,6 +39,18 @@ func RunWorkerWithRegistry(ctx context.Context, register WorkerRegistration) err
 	return run(ctx, true, register)
 }
 
+func closeWithin(timeout time.Duration, close func()) {
+	done := make(chan struct{})
+	go func() {
+		close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+	}
+}
+
 func run(ctx context.Context, worker bool, register WorkerRegistration) error {
 	c, e := config.Load(os.Getenv)
 	if e != nil {
@@ -63,7 +75,10 @@ func run(ctx context.Context, worker bool, register WorkerRegistration) error {
 	if e != nil {
 		return e
 	}
-	defer db.Close()
+	// A handler may be blocked in a database transaction while ignoring its
+	// cancellation context. Pool.Close waits for that checkout, so do not let it
+	// extend the process shutdown past the configured grace period.
+	defer closeWithin(c.ShutdownTimeout, db.Close)
 	cache, e := redis.Open(c.RedisURL)
 	if e != nil {
 		return e
