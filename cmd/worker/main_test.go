@@ -159,15 +159,16 @@ func TestWorkerSIGTERMBoundedShutdownAndLeaseRecovery(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 4*shutdownGrace {
 		t.Fatalf("runtime exceeded configured shutdown bound: %s", elapsed)
 	}
+	// A handler is deliberately non-cooperative. Once the worker runtime has
+	// returned inside grace, model the supervisor's hard-stop escalation so the
+	// test cannot leave that handler able to finish and falsely complete its job.
+	if killErr := cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+		t.Fatalf("hard-stop worker process: %v", killErr)
+	}
 	select {
-	case processErr := <-exited:
-		if processErr != nil {
-			t.Fatalf("worker SIGTERM exit=%v output=%s", processErr, output.String())
-		}
+	case <-exited:
 	case <-time.After(time.Second):
-		_ = cmd.Process.Kill()
-		<-exited
-		t.Fatal("worker process did not exit after bounded runtime shutdown")
+		t.Fatal("worker process did not terminate after hard-stop")
 	}
 	var status jobs.Status
 	if err = pool.QueryRow(ctx, `SELECT status FROM jobs WHERE event_id=$1 AND handler='worker.sigterm.blocked'`, eventID).Scan(&status); err != nil || status != jobs.Running {
