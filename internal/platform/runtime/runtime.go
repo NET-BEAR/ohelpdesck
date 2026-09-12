@@ -92,10 +92,16 @@ func run(ctx context.Context, worker bool, register WorkerRegistration) error {
 	if e != nil {
 		return e
 	}
+	cacheClosed := false
 	defer func() {
-		if cache.Close() != nil {
-			log.Error("redis close failed")
+		if cacheClosed {
+			return
 		}
+		closeWithin(c.ShutdownTimeout, func() {
+			if cache.Close() != nil {
+				log.Error("redis close failed")
+			}
+		})
 	}()
 	store, e := storage.New(c.S3Endpoint, c.S3Bucket, c.S3AccessKey, c.S3SecretKey, c.S3UseSSL)
 	if e != nil {
@@ -159,6 +165,13 @@ func run(ctx context.Context, worker bool, register WorkerRegistration) error {
 		db.Close()
 		close(databaseDone)
 	}()
+	cacheDone := make(chan struct{})
+	go func() {
+		if cache.Close() != nil {
+			log.Error("redis close failed")
+		}
+		close(cacheDone)
+	}()
 	telemetryDone := make(chan error, 1)
 	go func() { telemetryDone <- stop(shutdown) }()
 	for _, s := range servers {
@@ -172,6 +185,11 @@ func run(ctx context.Context, worker bool, register WorkerRegistration) error {
 	case <-shutdown.Done():
 	}
 	databaseClosed = true
+	select {
+	case <-cacheDone:
+	case <-shutdown.Done():
+	}
+	cacheClosed = true
 	select {
 	case telemetryErr := <-telemetryDone:
 		if telemetryErr != nil {
