@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
