@@ -1,0 +1,636 @@
+openapi: 3.1.0
+info:
+  title: OHelpdesck Foundation API
+  version: 0.1.0
+paths:
+  /api/v1/webhooks/telegram-bot/{channel_id}:
+    post:
+      operationId: receiveTelegramBotWebhook
+      parameters:
+        - name: channel_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '204': {description: Update accepted or safely ignored}
+        '400': {description: Malformed update, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: Invalid Telegram webhook secret, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Unknown or non-Telegram channel, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '405': {description: POST required}
+        '503': {description: Inbound persistence unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /health/live:
+    get:
+      operationId: liveness
+      responses:
+        '200':
+          description: Process is alive independently of dependencies
+          headers:
+            X-Request-ID:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: {type: string, const: live}
+  /health/ready:
+    get:
+      operationId: readiness
+      responses:
+        '200':
+          description: PostgreSQL ready; optional dependencies may be degraded
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Readiness'}
+        '503':
+          description: PostgreSQL unavailable
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Readiness'}
+  /api/v1/auth/login:
+    post:
+      operationId: localPasswordLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LoginRequest'}
+      responses:
+        '200':
+          description: Server session created; response also sets an HttpOnly cookie.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LoginResponse'}
+        '401': {description: Invalid credentials or disabled user, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '429': {description: Login rate limit reached, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/auth/logout:
+    post:
+      operationId: logout
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      responses:
+        '204': {description: Session revoked}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/me:
+    get:
+      operationId: getMe
+      responses:
+        '200':
+          description: Effective authenticated profile
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/users:
+    get:
+      operationId: listUsers
+      responses:
+        '200':
+          description: Users
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/User'}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing user.manage, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    post:
+      operationId: createUser
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateUserRequest'}
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing user.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '409': {description: Login or email already exists, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/users/{id}:
+    patch:
+      operationId: updateUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateUserRequest'}
+      responses:
+        '200':
+          description: User updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing user.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: User not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '409': {description: Last administrator or uniqueness constraint, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/users/{id}/permission-bundles:
+    put:
+      operationId: setUserPermissionBundles
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [bundle_ids]
+              properties:
+                bundle_ids: {type: array, items: {type: string, format: uuid}, uniqueItems: true}
+      responses:
+        '204': {description: Assignments replaced}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing role.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: User or bundle not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/permission-bundles:
+    get:
+      operationId: listPermissionBundles
+      responses:
+        '200':
+          description: Permission bundles
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/PermissionBundle'}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing role.manage, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    post:
+      operationId: createPermissionBundle
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreatePermissionBundleRequest'}
+      responses:
+        '201':
+          description: Bundle created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PermissionBundle'}
+        '400': {description: Validation error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing role.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '409': {description: Bundle name already exists, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/channels:
+    get:
+      operationId: listChannels
+      security: [{SessionCookie: []}]
+      responses:
+        '200': {description: Channels without provider credentials, content: {application/json: {schema: {$ref: '#/components/schemas/Channels'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing channel.manage, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '503': {description: Channel administration unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    post:
+      operationId: createChannel
+      security: [{SessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CSRFToken'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateChannelRequest'}
+      responses:
+        '201': {description: Disabled channel created; credentials are never returned, content: {application/json: {schema: {$ref: '#/components/schemas/Channel'}}}}
+        '400': {description: Validation error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing channel.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '503': {description: Channel administration unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/channels/{id}:
+    get:
+      operationId: getChannel
+      security: [{SessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/ChannelID'}]
+      responses:
+        '200': {description: Channel without provider credentials, content: {application/json: {schema: {$ref: '#/components/schemas/Channel'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing channel.manage, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Channel not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '400': {description: Invalid channel UUID, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '503': {description: Channel administration unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    patch:
+      operationId: patchChannel
+      security: [{SessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/ChannelID'}, {$ref: '#/components/parameters/CSRFToken'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PatchChannelRequest'}
+      responses:
+        '200': {description: Updated channel without provider credentials, content: {application/json: {schema: {$ref: '#/components/schemas/Channel'}}}}
+        '400': {description: Validation error, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing channel.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Channel not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '503': {description: Channel administration unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/channels/{id}/actions/{action}:
+    post:
+      operationId: channelAction
+      security: [{SessionCookie: []}]
+      parameters:
+        - $ref: '#/components/parameters/ChannelID'
+        - name: action
+          in: path
+          required: true
+          schema: {type: string, enum: [validate, enable, disable]}
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200': {description: Validation result or changed channel, content: {application/json: {schema: {oneOf: [{$ref: '#/components/schemas/Channel'}, {$ref: '#/components/schemas/ChannelValidation'}]}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing channel.manage or invalid CSRF token, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Channel not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '409': {description: Channel cannot be enabled before local validation succeeds, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '400': {description: Invalid channel UUID, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '503': {description: Channel administration unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/conversations:
+    get:
+      operationId: listConversations
+      security: [{SessionCookie: []}]
+      parameters:
+        - {name: cursor, in: query, description: "Opaque continuation cursor bound to the complete active filter set. Reuse it only with the same channel_id, status, priority and assignee selectors.", schema: {type: string, maxLength: 512}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+        - {name: sort, in: query, schema: {type: string, enum: [number_desc]}}
+        - {name: channel_id, in: query, schema: {type: string, format: uuid}}
+        - {name: status, in: query, schema: {$ref: '#/components/schemas/ConversationStatus'}}
+        - {name: priority, in: query, schema: {$ref: '#/components/schemas/ConversationPriority'}}
+        - {name: assignee, in: query, schema: {type: string}}
+      responses:
+        '200': {description: Authorized queue page, content: {application/json: {schema: {$ref: '#/components/schemas/ConversationPage'}}}}
+        '400': {description: Invalid filter or cursor, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing conversation.read, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/conversations/{id}:
+    get:
+      operationId: getConversation
+      security: [{SessionCookie: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses:
+        '200': {description: Authorized safe conversation detail, content: {application/json: {schema: {$ref: '#/components/schemas/ConversationDetail'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing conversation.read or channel membership, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/conversations/{id}/messages:
+    get:
+      operationId: listConversationMessages
+      security: [{SessionCookie: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: before, in: query, schema: {type: string, maxLength: 512}}
+        - {name: after, in: query, schema: {type: string, maxLength: 512}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+      responses:
+        '200': {description: Authorized safe timeline page, content: {application/json: {schema: {$ref: '#/components/schemas/MessagePage'}}}}
+        '400': {description: Invalid cursor, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing conversation.read or channel membership, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    post:
+      operationId: queueOutboundMessage
+      security: [{SessionCookie: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QueueOutboundMessageRequest'}
+      responses:
+        '201': {description: Queued outbound Message created, content: {application/json: {schema: {$ref: '#/components/schemas/OutboundMessage'}}}}
+        '200': {description: Canonical Message returned for an equivalent retry, content: {application/json: {schema: {$ref: '#/components/schemas/OutboundMessage'}}}}
+        '400': {description: "Invalid JSON, missing Idempotency-Key or empty content", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: "Invalid CSRF, missing conversation.reply or Channel can_reply membership", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '409': {description: "Idempotency key was reused with a different request", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/conversations/{id}/assignee:
+    patch:
+      operationId: assignConversation
+      security: [{SessionCookie: []}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}, {$ref: '#/components/parameters/CSRFToken'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AssignmentRequest'}}}}
+      responses:
+        '200': {description: Assignment updated, content: {application/json: {schema: {$ref: '#/components/schemas/Conversation'}}}}
+        '400': {description: Invalid or ineligible assignment, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Missing conversation.reassign or channel membership, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '409': {description: Version conflict, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/conversations/{id}/status:
+    patch:
+      operationId: changeConversationStatus
+      security: [{SessionCookie: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ChangeConversationStatusRequest'}
+      responses:
+        '200': {description: Conversation status updated, content: {application/json: {schema: {$ref: '#/components/schemas/Conversation'}}}}
+        '400': {description: "Invalid JSON, enum, expected_version or snooze deadline", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: "Invalid CSRF, missing conversation.reply or Channel can_reply membership", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '409': {description: Stale expected_version or invalid state transition, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /api/v1/conversations/{id}/priority:
+    patch:
+      operationId: setConversationPriority
+      security: [{SessionCookie: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetConversationPriorityRequest'}
+      responses:
+        '200': {description: Conversation priority updated, content: {application/json: {schema: {$ref: '#/components/schemas/Conversation'}}}}
+        '400': {description: "Invalid JSON, enum or expected_version", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {description: No valid session, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: "Invalid CSRF, missing conversation.reply or Channel can_reply membership", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Conversation not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '409': {description: Stale expected_version, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+components:
+  securitySchemes:
+    SessionCookie:
+      type: apiKey
+      in: cookie
+      name: ohelpdesck_session
+  parameters:
+    ChannelID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 255}
+    CSRFToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema: {type: string, minLength: 32}
+  schemas:
+    Readiness:
+      type: object
+      required: [status, checks]
+      properties:
+        status: {type: string, enum: [ready, not_ready]}
+        checks:
+          type: object
+          required: [postgres, redis, object_storage]
+          additionalProperties: false
+          properties:
+            postgres: {type: string, enum: [ok, unavailable]}
+            redis: {type: string, enum: [ok, degraded]}
+            object_storage: {type: string, enum: [ok, degraded]}
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, details, request_id]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            details: {type: object, additionalProperties: {type: string}}
+            request_id: {type: string}
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [login, password]
+      properties:
+        login: {type: string, minLength: 1, maxLength: 255}
+        password: {type: string, minLength: 1, maxLength: 1024, writeOnly: true}
+    LoginResponse:
+      type: object
+      additionalProperties: false
+      required: [csrf_token]
+      properties:
+        csrf_token: {type: string, minLength: 32}
+    Role:
+      type: string
+      enum: [agent, supervisor, administrator]
+    UserStatus:
+      type: string
+      enum: [active, disabled]
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, login, email, name, role, status]
+      properties:
+        id: {type: string, format: uuid}
+        login: {type: string}
+        email: {type: string}
+        name: {type: string}
+        role: {$ref: '#/components/schemas/Role'}
+        status: {$ref: '#/components/schemas/UserStatus'}
+        permissions:
+          type: array
+          items: {type: string}
+          uniqueItems: true
+    CreateUserRequest:
+      type: object
+      additionalProperties: false
+      required: [login, email, name, password, role]
+      properties:
+        login: {type: string, minLength: 1, maxLength: 255}
+        email: {type: string, minLength: 1, maxLength: 320}
+        name: {type: string, minLength: 1, maxLength: 255}
+        password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}
+        role: {$ref: '#/components/schemas/Role'}
+    UpdateUserRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        email: {type: string, minLength: 1, maxLength: 320}
+        name: {type: string, minLength: 1, maxLength: 255}
+        password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}
+        role: {$ref: '#/components/schemas/Role'}
+        status: {$ref: '#/components/schemas/UserStatus'}
+    PermissionBundle:
+      type: object
+      additionalProperties: false
+      required: [id, name, permissions]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        permissions: {type: array, items: {type: string}, uniqueItems: true}
+    ChannelType:
+      type: string
+      enum: [email, telegram, telegram_bot, telegram_user, carrotquest, omni, max, vk]
+    Channel:
+      type: object
+      additionalProperties: false
+      required: [id, type, name, status, enabled, config, has_credentials]
+      properties:
+        id: {type: string, format: uuid}
+        type: {$ref: '#/components/schemas/ChannelType'}
+        name: {type: string}
+        status: {type: string, enum: [active, degraded, reauthorization_required, disabled, error]}
+        enabled: {type: boolean}
+        config: {type: object, additionalProperties: true}
+        has_credentials: {type: boolean}
+    Channels:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Channel'}}
+    CreateChannelRequest:
+      type: object
+      additionalProperties: false
+      required: [type, name, config, credentials]
+      properties:
+        type: {$ref: '#/components/schemas/ChannelType'}
+        name: {type: string, minLength: 1, maxLength: 255}
+        config: {type: object, additionalProperties: true}
+        credentials: {type: object, additionalProperties: true, writeOnly: true}
+    PatchChannelRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: {type: string, minLength: 1, maxLength: 255}
+        config: {type: object, additionalProperties: true}
+        credentials: {type: object, additionalProperties: true, writeOnly: true}
+    ChannelValidation:
+      type: object
+      additionalProperties: false
+      required: [valid]
+      properties:
+        valid: {type: boolean}
+    CreatePermissionBundleRequest:
+      type: object
+      additionalProperties: false
+      required: [name, permissions]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 255}
+        permissions: {type: array, items: {type: string}, uniqueItems: true}
+
+    ConversationPage:
+      type: object
+      required: [items, next_cursor]
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/ConversationListItem'}}, next_cursor: {type: [string, 'null']}}
+    ConversationListItem:
+      type: object
+      required: [id, number, channel, contact, status, priority, last_activity_at, version]
+      properties: {id: {type: string, format: uuid}, number: {type: integer, format: int64}, channel: {$ref: '#/components/schemas/WorkspaceChannel'}, contact: {$ref: '#/components/schemas/WorkspaceContact'}, assignee: {$ref: '#/components/schemas/WorkspaceUserNullable'}, status: {$ref: '#/components/schemas/ConversationStatus'}, priority: {$ref: '#/components/schemas/ConversationPriority'}, waiting_since: {type: [string, 'null'], format: date-time}, last_activity_at: {type: string, format: date-time}, last_message: {$ref: '#/components/schemas/MessagePreviewNullable'}, version: {type: integer, format: int64}}
+    ConversationDetail:
+      allOf: [{$ref: '#/components/schemas/ConversationListItem'}]
+      properties: {subject: {type: [string, 'null']}, first_response_at: {type: [string, 'null'], format: date-time}, last_inbound_at: {type: [string, 'null'], format: date-time}, last_outbound_at: {type: [string, 'null'], format: date-time}, resolved_at: {type: [string, 'null'], format: date-time}, snoozed_until: {type: [string, 'null'], format: date-time}, capabilities: {type: object, required: [can_reply, can_reassign], properties: {can_reply: {type: boolean}, can_reassign: {type: boolean}}}}
+    MessagePage:
+      type: object
+      required: [items]
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/TimelineMessage'}}, previous_cursor: {type: [string, 'null']}, next_cursor: {type: [string, 'null']}}
+    WorkspaceUser: {type: object, required: [id, name], properties: {id: {type: string, format: uuid}, name: {type: string}}}
+    WorkspaceUserNullable: {type: [object, 'null'], properties: {id: {type: string, format: uuid}, name: {type: string}}}
+    WorkspaceChannel: {type: object, required: [id, name, type, status], properties: {id: {type: string, format: uuid}, name: {type: string}, type: {type: string}, status: {type: string}}}
+    WorkspaceContact: {type: object, required: [id, display_name], properties: {id: {type: string, format: uuid}, display_name: {type: string}}}
+    MessagePreviewNullable: {type: [object, 'null'], properties: {id: {type: string, format: uuid}, direction: {type: string}, status: {$ref: '#/components/schemas/MessageStatus'}, preview: {type: string}, created_at: {type: string, format: date-time}}}
+    TimelineMessage: {type: object, required: [id, conversation_id, direction, actor, content, status, created_at], properties: {id: {type: string, format: uuid}, conversation_id: {type: string, format: uuid}, direction: {type: string}, actor: {type: object, required: [type], properties: {type: {type: string}, user: {$ref: '#/components/schemas/WorkspaceUserNullable'}}}, content: {type: object, required: [type], properties: {type: {type: string}, text: {type: [string, 'null']}, html: {type: [string, 'null']}}}, status: {$ref: '#/components/schemas/MessageStatus'}, created_at: {type: string, format: date-time}, queued_at: {type: [string, 'null'], format: date-time}, sent_at: {type: [string, 'null'], format: date-time}, delivered_at: {type: [string, 'null'], format: date-time}, reply_to_message_id: {type: [string, 'null'], format: uuid}, failed: {type: [object, 'null'], properties: {code: {type: string}}}}}
+    AssignmentRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, assignee_id]
+      properties: {expected_version: {type: integer, format: int64, minimum: 1}, assignee_id: {type: [string, 'null'], format: uuid}}
+    ConversationStatus:
+      type: string
+      enum: [open, pending, resolved, snoozed]
+    ConversationPriority:
+      type: string
+      enum: [low, normal, high, urgent]
+    Conversation:
+      type: object
+      additionalProperties: false
+      required: [id, channel_id, status, priority, version, assignee]
+      properties:
+        id: {type: string, format: uuid}
+        channel_id: {type: string, format: uuid}
+        status: {$ref: '#/components/schemas/ConversationStatus'}
+        priority: {$ref: '#/components/schemas/ConversationPriority'}
+        resolved_at: {type: [string, 'null'], format: date-time}
+        snoozed_until: {type: [string, 'null'], format: date-time}
+        version: {type: integer, format: int64, minimum: 1}
+        assignee: {type: [object, 'null'], properties: {id: {type: string, format: uuid}, name: {type: string}}, required: [id, name]}
+    ChangeConversationStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, status]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+        status: {$ref: '#/components/schemas/ConversationStatus'}
+        snoozed_until: {type: string, format: date-time}
+    SetConversationPriorityRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, priority]
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+        priority: {$ref: '#/components/schemas/ConversationPriority'}
+
+    MessageStatus:
+      type: string
+      enum: [received, queued, sent, delivered, read, failed, unknown]
+    QueueOutboundMessageRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        text: {type: string, maxLength: 65535}
+        html: {type: string, maxLength: 65535}
+        reply_to_message_id: {type: string, format: uuid}
+      anyOf:
+        - required: [text]
+        - required: [html]
+    OutboundMessage:
+      type: object
+      additionalProperties: false
+      required: [id, conversation_id, channel_id, status, duplicate]
+      properties:
+        id: {type: string, format: uuid}
+        conversation_id: {type: string, format: uuid}
+        channel_id: {type: string, format: uuid}
+        status: {$ref: '#/components/schemas/MessageStatus'}
+        duplicate: {type: boolean}

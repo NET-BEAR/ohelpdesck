@@ -1,0 +1,145 @@
+# Независимый security review: SPEC-010 local_password
+
+Статус: `needs_changes`. Дата: 2026-09-10. Проверяющий: независимый Reviewer.
+
+## Scope и evidence
+
+Проверены текущие незакоммиченные изменения SPEC-010: SQL migration, `internal/auth`, platform/config/http/runtime, bootstrap, compose/deploy, OpenAPI, frontend-контракт и tests. Секреты и `.env` не читались.
+
+Выполнено без ошибок:
+
+- `docker compose --env-file .env -f deploy/compose.yml run --rm go go test -race -count=1 ./internal/auth ./internal/platform/config ./internal/platform/httpserver ./cmd/bootstrap-admin ./cmd/migrate` — exit 0;
+- `docker compose --env-file .env -f deploy/compose.yml run --rm go go test -count=1 ./tests/integration` — exit 0;
+- `docker compose --env-file .env -f deploy/compose.yml run --rm go go vet ./...` — exit 0;
+- OpenAPI validator и его deliberate negative control — exit 0;
+- `git diff --check` — без whitespace errors.
+
+Тесты подтверждают базовый вход, opaque hash-at-rest session, CSRF, RBAC для обычного agent, Argon2id format и migration path. Они не покрывают конкурентное снятие прав последнего администратора, реальный reverse-proxy key rate limiter, security observability и равномерную проверку неизвестного login.
+
+## Findings
+
+### P1 — параллельное отключение двух администраторов нарушает инвариант последнего active administrator
+
+В [repository.go](/Users/krassus/github/ohelpdesck/internal/auth/repository.go:102) блокируется только изменяемая строка пользователя. Проверка количества active administrators выполняется отдельным обычным `SELECT count(*)` на [строке 132](/Users/krassus/github/ohelpdesck/internal/auth/repository.go:132). При двух администраторах два параллельных `PATCH` могут каждый увидеть `count=2`, затем отключить разные строки и закоммититься. В migration нет database-level guard или сериализации всех active administrator rows: [000002_auth_users_rbac.up.sql](/Users/krassus/github/ohelpdesck/db/migrations/000002_auth_users_rbac.up.sql:10).
+
+Это нарушает AC сценарий и BUSINESS_ANALYSIS: система может остаться без активного администратора. Нужна сериализация этой операции — например, транзакционный advisory lock для admin-role transitions либо блокировка набора active administrator rows до подсчёта и update — и integration test с двумя конкурентными попытками disable/demote.
+
+### P1 — rate limit входа становится общим для всех клиентов за nginx
+
+Login limiter ключует попытки по `r.RemoteAddr` на [http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:184), а `limiterKey` использует host peer connection на [строках 323–329](/Users/krassus/github/ohelpdesck/internal/auth/http.go:323). В production delivery весь трафик к API проходит через nginx `proxy_pass` ([nginx.conf](/Users/krassus/github/ohelpdesck/deploy/nginx.conf:17)), который не передаёт и API не валидирует адрес исходного клиента. Следовательно, API увидит один адрес контейнера `web`; пять ошибочных попыток одного пользователя заблокируют вход всем пользователям на 15 минут.
+
+Нужна явная trust-boundary policy: либо безопасно передавать/разбирать client IP только от trusted proxy, либо устанавливать rate-limit key по нормализованному login вместе с proxy-verified IP. Добавить integration test через реальный nginx, демонстрирующий изоляцию лимита для двух клиентов и невозможность доверять произвольному forwarded header.
+
+### P2 — неизвестный login не проходит Argon2id verification и создаёт timing oracle
+
+В [login](/Users/krassus/github/ohelpdesck/internal/auth/http.go:192) короткое замыкание `err != nil || ... || VerifyPassword(...)` возвращает 401 для отсутствующего login до Argon2id. Для существующего пользователя выполняется password hash с memory cost 64 MiB ([password.go](/Users/krassus/github/ohelpdesck/internal/auth/password.go:13)). HTTP body одинаков, но стабильная разница времени позволяет различать существующие логины при достаточно большом числе измерений.
+
+Следует выполнять constant-work verify с фиксированным валидным dummy Argon2id hash при `ErrNotFound`, сохраняя нейтральный response и existing rate-limit. Добавить test на обязательный вызов verifier в absent-user branch через injectible verifier или другой наблюдаемый seam.
+
+### P2 — обязательная security observability из SPEC-010 не реализована и не тестируется
+
+SPEC требует `auth_requests_total`, `auth_failures_total`, `authorization_denied_total`, `user_admin_changes_total` и structured security events ([spec/010-auth-users-rbac.md](/Users/krassus/github/ohelpdesck/spec/010-auth-users-rbac.md:475)). В login/authz/user mutation routes нет ни metrics, ни security log calls: [http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:183), [http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:228), [http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:146). Общий access log не заменяет требуемые outcome/reason/permission/operation signals.
+
+Нужно добавить bounded-label metrics и security logs без password, cookie, CSRF и login secret values; затем добавить capture tests на successful/failed/disabled login, denied authorization и user mutation. Это закрывает task decomposition 010-11 и AC о non-leak observability.
+
+## Положительные наблюдения
+
+- Пароли имеют минимальную длину, хешируются Argon2id с 16-byte random salt, фиксированными допустимыми parameters и constant-time comparison ([password.go](/Users/krassus/github/ohelpdesck/internal/auth/password.go:15)).
+- Session и CSRF values генерируются криптографически, хранятся как hashes, а raw values не входят в user response ([session.go](/Users/krassus/github/ohelpdesck/internal/auth/session.go:24), [http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:253)). Cookie содержит `HttpOnly`, `SameSite=Lax` и `Secure` в production ([http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:246)).
+- DB uniqueness для login/email case-insensitive и permission bundle assignment transaction уже есть ([000002_auth_users_rbac.up.sql](/Users/krassus/github/ohelpdesck/db/migrations/000002_auth_users_rbac.up.sql:24)).
+- `AUTH_PROVIDER` проходит fail-closed validation, а raw configuration не выводится в API startup error ([config.go](/Users/krassus/github/ohelpdesck/internal/platform/config/config.go:34), [cmd/api/main.go](/Users/krassus/github/ohelpdesck/cmd/api/main.go:18)).
+
+## Verdict
+
+`needs_changes`.
+
+До QA и deploy должны быть устранены оба P1; затем повторить независимый review и security-focused integration tests. P2 должны быть закрыты в этом P0 security slice, поскольку они соответствуют явно перечисленным требованиям SPEC-010.
+
+---
+
+## Повторный review security rework `ccc3cef` (2026-09-10)
+
+Проверен только rework прежних P1/P2. Предыдущие выводы по последней редакции:
+
+- **P1 last-admin race — устранён в коде.** [repository.go](/Users/krassus/github/ohelpdesck/internal/auth/repository.go:103) получает transaction-scoped PostgreSQL advisory lock перед загрузкой target и подсчётом active administrators. Поэтому второй concurrent transition читает состояние только после commit первого и получает `ErrForbidden`, если остался один administrator.
+- **P1 reverse-proxy-wide rate limit — устранён в коде.** Login теперь использует SHA-256 от trim/lower-case login ([http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:204), [http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:362)), а не `RemoteAddr`. Ключ не попадает в logs/metrics.
+- **P2 timing oracle unknown/disabled login — устранён в коде.** Независимо от наличия и статуса пользователя вызывается `VerifyPassword`: используется user hash либо singleton dummy Argon2id hash ([http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:210)).
+
+Повторно успешно выполнены:
+
+- `go test -race -count=1 ./internal/auth ./internal/platform/telemetry ./internal/platform/runtime ./tests/integration` — затронутые non-integration packages завершились exit 0; integration run требует корректировки ниже;
+- отдельный `go test -count=1 ./tests/integration -run TestConcurrentAdministratorDisableKeepsOneActiveAdministrator` — exit 0;
+- `go test -count=1 ./internal/auth ./internal/platform/telemetry` — exit 0;
+- OpenAPI validator и deliberate negative control — exit 0.
+
+### P2 — security audit/metric фиксирует user change ещё до подтверждения успешной мутации
+
+В create route `h.userAdminChange` вызывается между special-case `ErrConflict` и общей обработкой `err` ([http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:93)). Любая non-conflict ошибка repository записывается как успешное создание с пустым target ID, хотя HTTP возвращает `400`. В update route это же происходит до `ErrForbidden`, `ErrConflict` и общей error branch ([http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:175)). Например, отказ снятия последнего administrator попадёт в `user_admin_changes_total{operation="update"}` и event `user_administration_changed` как будто изменение применилось.
+
+Это искажает security audit и counter, требуемые SPEC-010. Перенести вызовы после `err == nil`; отдельно, при необходимости, фиксировать rejected action отдельным bounded event/result. Дополнить capture test: invalid update и last-admin refusal не должны увеличивать successful-change metric и не должны записывать successful-change event.
+
+### P2 — новый concurrent integration test зависит от глобального состояния общей dev БД
+
+Тест [auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:258) создаёт двух administrators, но его ожидание строго `successes == 1` не учитывает уже существующих active administrators. При наличии bootstrap `sysadmin` обе операции disable новых пользователей корректно могут быть успешными, однако тест объявит это defect. Во время повторного запуска набора `-count=3` это проявилось как failures `last admin disabled: 200` и `last-admin guard outcomes: success=2 protected=0`; одиночный запуск прошёл.
+
+Тест должен изолировать initial state (например, использовать ephemeral database per test) либо вычислять expected outcome из scoped/initial global count и проверять глобальный invariant `active administrators >= 1`. До этого full integration result нестабилен и не является достаточным evidence для QA.
+
+## Обновлённый verdict
+
+`needs_changes`.
+
+Первоначальные P1 закрыты реализацией, но до перехода к QA нужно исправить два P2: truthful security audit/metric и state-independent concurrent integration test. После этого повторить full `make verify`, независимый review и QA.
+
+---
+
+## Финальный narrow review P2 rework `fd1063c` (2026-09-10)
+
+Проверены исключительно два замечания предыдущего review и полученный финальный evidence.
+
+- **Truthful user-admin audit — исправлено.** `userAdminChange("create", ...)` вызывается только после общей проверки `err == nil` ([http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:93)); update event аналогично вызывается после обработки `ErrNotFound`, `ErrForbidden`, `ErrConflict` и общей error branch ([http.go](/Users/krassus/github/ohelpdesck/internal/auth/http.go:175)). Capture assertion фиксирует counter до отказа last-admin и доказывает отсутствие инкремента после `409` ([auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:239)).
+- **State-independent concurrent test — исправлено.** Тест получает фактическое исходное глобальное число active administrators после создания своих двух пользователей ([auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:283)), выводит допустимое количество successful disable и проверяет итоговый глобальный инвариант `active administrators >= 1` ([auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:313)). Он больше не предполагает пустую persistent dev DB.
+
+Независимо выполнено последовательно, без пересечения migration tests в общей БД:
+
+- `make verify` — exit 0: Go coverage 84.19% statements и 81.00% executable block lines; 30 frontend tests; OpenAPI positive и negative control; delivery tests; `go vet`; race; `govulncheck` сообщил 0 reachable vulnerabilities; npm audit 0;
+- `docker compose --env-file .env -f deploy/compose.yml run --rm go go test -count=3 ./tests/integration` — exit 0.
+
+## Финальный verdict
+
+`approve`.
+
+В проверенном P2 scope не осталось блокирующих security или correctness замечаний. Ограничение остаётся архитектурным и уже зафиксированным: in-memory per-process rate limiter не является distributed limit; для текущего одного API process это не отменяет защиту, а масштабирование API требует отдельного Redis-backed/durable policy в будущем этапе.
+
+---
+
+## Narrow review QA coverage rework `aa21e25` (2026-09-10)
+
+### P2 — duplicate-create scenario не доказывает требуемую concurrent case-insensitive uniqueness
+
+В [auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:220) обе goroutine используют один JSON body с одинаковыми login и email. Между их созданием и HTTP call нет start barrier ([auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:224)), поэтому scheduler вправе выполнить второй request только после завершения первого. Тогда текущая проверка `201` + `409` доказывает уже покрытый последовательный duplicate contract, а не конкурентную ветвь.
+
+Кроме того, acceptance criterion прямо требует collision `login` **или** `email` ignoring case. Новый test не посылает case variants, не изолирует одну collision dimension от другой и не проверяет persisted cardinality. PostgreSQL lower-case indexes существуют, но acceptance должен проверять их HTTP integration behaviour.
+
+Нужен barrier непосредственно перед двумя `POST`, отдельные cases как минимум для `(login differing only by case, different email)` и `(email differing only by case, different login)`, а после `201`/`409` — database assertion ровно одного persisted user для соответствующего normalized key. Это не требует production change.
+
+### Подтверждённое
+
+Добавленный rate-limit scenario корректно проходит HTTP boundary: пять wrong-password requests получают neutral `401`, шестой — `429`, `auth_failures_total{reason="rate_limited"}` равен 1, а login другого пользователя остаётся успешным ([auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:110)). Он не ослабляет policy и не зависит от `RemoteAddr`.
+
+Независимый `go test -count=3 ./tests/integration -run 'TestLocalPasswordLoginAndAuthorization|TestAdministrationBundlesAndSessionFailures'` завершился exit 0. Это подтверждает стабильность существующих assertions, но не устраняет описанный пробел спецификации concurrent/case-insensitive scenario.
+
+## Verdict QA coverage rework
+
+`needs_changes` — один P2 в test-only scope. После добавления deterministic barrier и two case-variant scenarios достаточно повторить narrow review и QA retest; production implementation менять не требуется.
+
+---
+
+## Финальный narrow review duplicate-create rework `9d8b627` (2026-09-10)
+
+`approve`.
+
+- Обе request goroutine сообщают readiness и ожидают общий закрываемый `start` channel; он закрывается только после `ready.Wait()` ([auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:226)). Это устраняет прежнюю возможность последовательного запуска.
+- Проверяются отдельно login collision, differing only by case при разных email, и email collision, differing only by case при разных login ([auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:257)). В каждом случае assertion требует ровно `201` и `409`.
+- После каждого race выполняется PostgreSQL assertion ровно одного persisted user по соответствующему normalized login/email selector ([auth_test.go](/Users/krassus/github/ohelpdesck/tests/integration/auth_test.go:252)).
+
+Независимо выполнено: `docker compose --env-file .env -f deploy/compose.yml run --rm go go test -race -count=3 ./tests/integration` — exit 0, 131.559s. Production code не изменялся; security policy не ослаблена.

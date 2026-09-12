@@ -1,0 +1,150 @@
+name: ohelpdesck-dev
+
+x-app: &app
+  image: ohelpdesck-api:${RELEASE_SHA:-local}
+  build:
+    context: ${SOURCE_ROOT:-..}
+    dockerfile: deploy/Dockerfile
+  environment: &app-env
+    ENVIRONMENT: development
+    AUTH_PROVIDER: ${AUTH_PROVIDER:-local_password}
+    HTTP_ADDRESS: :8080
+    METRICS_ADDRESS: :9090
+    DATABASE_URL: postgres://support:${POSTGRES_PASSWORD:?run make bootstrap}@postgres:5432/support?sslmode=disable
+    REDIS_URL: redis://redis:6379/0
+    S3_ENDPOINT: minio:9000
+    S3_BUCKET: support-dev
+    S3_ACCESS_KEY: ${S3_ACCESS_KEY:?run make bootstrap}
+    S3_SECRET_KEY: ${S3_SECRET_KEY:?run make bootstrap}
+    CHANNEL_CREDENTIALS_AES256_KEY: ${CHANNEL_CREDENTIALS_AES256_KEY:?provide a base64-encoded 32-byte key}
+    S3_USE_SSL: "false"
+  init: true
+  user: "65532:65532"
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  restart: unless-stopped
+  stop_grace_period: 30s
+
+services:
+  postgres:
+    image: postgres:17.8-bookworm
+    environment:
+      POSTGRES_DB: support
+      POSTGRES_USER: support
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run make bootstrap}
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U support -d support"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+  redis:
+    image: redis:7.4.8-alpine
+    command: [redis-server, --save, "", --appendonly, "no"]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: [server, /data, --console-address, ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:?run make bootstrap}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?run make bootstrap}
+    volumes: [minio-data:/data]
+    restart: unless-stopped
+  minio-init:
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        for attempt in $$(seq 1 60); do
+          if mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; then
+            mc mb --ignore-existing local/support-dev && exit 0
+          fi
+          sleep 1
+        done
+        echo 'Object storage initialization failed' >&2
+        exit 1
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:?run make bootstrap}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?run make bootstrap}
+    depends_on: [minio]
+    restart: "no"
+  api:
+    <<: *app
+    ports: ["127.0.0.1:18081:8080", "127.0.0.1:19090:9090"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --max-time, "4", http://localhost:8080/health/ready]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  worker:
+    <<: *app
+    command: [/app/worker]
+    depends_on:
+      postgres: {condition: service_healthy}
+  migrate:
+    <<: *app
+    profiles: [tools]
+    entrypoint: [/app/migrate]
+    command: [up]
+    restart: "no"
+    depends_on:
+      postgres: {condition: service_healthy}
+  bootstrap-admin:
+    <<: *app
+    profiles: [tools]
+    entrypoint: [/app/bootstrap-admin]
+    environment:
+      <<: *app-env
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-}
+    restart: "no"
+    depends_on:
+      postgres: {condition: service_healthy}
+  web:
+    image: ohelpdesck-web:${RELEASE_SHA:-local}
+    build:
+      context: ${SOURCE_ROOT:-..}
+      dockerfile: deploy/Dockerfile.web
+    ports: ["127.0.0.1:18080:8080"]
+    user: "101:101"
+    depends_on:
+      api: {condition: service_healthy}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, wget, -q, --spider, http://127.0.0.1:8080/]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  go:
+    image: golang:1.25.13-bookworm
+    profiles: [tools]
+    working_dir: /src
+    # Hide frontend dependencies: some npm packages ship unrelated Go source.
+    volumes: ["..:/src", "/src/web/node_modules", "go-mod:/go/pkg/mod", "go-build:/root/.cache/go-build"]
+    environment:
+      <<: *app-env
+      REQUIRE_INTEGRATION: "true"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+
+volumes:
+  postgres-data:
+  minio-data:
+  go-mod:
+  go-build:
