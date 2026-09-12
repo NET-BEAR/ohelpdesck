@@ -8,11 +8,11 @@ function lifecycleLabel(status: string): string {
   switch (status) { case 'queued': return 'В очереди'; case 'sent': return 'Отправлено'; case 'delivered': return 'Доставлено'; case 'read': return 'Прочитано'; case 'failed': return 'Не отправлено'; default: return 'Статус неизвестен'; }
 }
 function Timeline({ value, busy, quiet, onBefore, onAfter }: { value: unknown; busy: boolean; quiet: boolean; onBefore: (cursor: string) => void; onAfter: (cursor: string) => void }) {
-  const title = useRef<HTMLHeadingElement>(null); const wasBusy = useRef(false); const requestedFocus = useRef(false);
-  useEffect(() => { if (requestedFocus.current && wasBusy.current && !busy) { title.current?.focus(); requestedFocus.current = false; } wasBusy.current = busy; }, [busy]);
+  const title = useRef<HTMLHeadingElement>(null); const wasBusy = useRef(false); const requestedFocus = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => { if (requestedFocus.current && wasBusy.current && !busy) { requestedFocus.current.focus(); requestedFocus.current = null; } wasBusy.current = busy; }, [busy]);
   const page = typeof value === 'object' && value !== null ? value as { items?: TimelineEntry[]; previous_cursor?: string | null; next_cursor?: string | null } : {};
   const entries = Array.from(new Map((page.items ?? []).map(message => [message.id, message])).values());
-  return <section aria-labelledby="timeline-title" aria-live={quiet ? 'off' : 'polite'} aria-busy={busy}><h2 id="timeline-title" ref={title} tabIndex={-1}>Сообщения</h2><ol aria-label="История сообщений">{entries.map(message => <li key={message.id}><strong>{message.direction === 'incoming' ? 'Клиент' : 'Оператор'}</strong><span aria-label="Состояние доставки">{lifecycleLabel(message.status)}</span>{message.content?.text && <p>{message.content.text}</p>}{message.status === 'failed' && <p role="status">Ошибка доставки: {message.failed?.code === 'provider_rejected' ? 'отклонено провайдером' : 'не удалось доставить'}</p>}</li>)}</ol>{entries.length === 0 && <p>Сообщений пока нет.</p>}<nav aria-label="Страницы сообщений"><button disabled={!page.previous_cursor || busy} onClick={() => { if (page.previous_cursor) { requestedFocus.current = true; onBefore(page.previous_cursor); } }}>Ранее</button><button disabled={!page.next_cursor || busy} onClick={() => { if (page.next_cursor) { requestedFocus.current = true; onAfter(page.next_cursor); } }}>Позже</button></nav></section>;
+  return <section aria-labelledby="timeline-title" aria-live={quiet ? 'off' : 'polite'} aria-busy={busy}><h2 id="timeline-title" ref={title} tabIndex={-1}>Сообщения</h2><ol aria-label="История сообщений">{entries.map(message => <li key={message.id}><strong>{message.direction === 'incoming' ? 'Клиент' : 'Оператор'}</strong><span aria-label="Состояние доставки">{lifecycleLabel(message.status)}</span>{message.content?.text && <p>{message.content.text}</p>}{message.status === 'failed' && <p role="status">Ошибка доставки: {message.failed?.code === 'provider_rejected' ? 'отклонено провайдером' : 'не удалось доставить'}</p>}</li>)}</ol>{entries.length === 0 && <p>Сообщений пока нет.</p>}<nav aria-label="Страницы сообщений"><button disabled={!page.previous_cursor || busy} onClick={event => { if (page.previous_cursor) { requestedFocus.current = event.currentTarget; onBefore(page.previous_cursor); } }}>Ранее</button><button disabled={!page.next_cursor || busy} onClick={event => { if (page.next_cursor) { requestedFocus.current = event.currentTarget; onAfter(page.next_cursor); } }}>Позже</button></nav></section>;
 }
 
 export class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
@@ -82,12 +82,13 @@ function WorkspacePage() {
 function ConversationPage() {
   const { id = '' } = useParams<{ id: string }>();
   const heading = useRef<HTMLHeadingElement>(null);
+  const focusedID = useRef('');
   const [replyText, setReplyText] = useState('');
   const [replyKey, setReplyKey] = useState<string>();
   const [actionError, setActionError] = useState<string>();
   const [pending, setPending] = useState(false);
   const detail = useQuery({ queryKey: ['conversation', id], queryFn: () => getConversation(id), retry: false, refetchInterval: 15_000 });
-  useEffect(() => { if (detail.data) heading.current?.focus(); }, [id, detail.data]);
+  useEffect(() => { if (detail.data && focusedID.current !== id) { heading.current?.focus(); focusedID.current = id; } }, [id, detail.data]);
   const [timelineCursor, setTimelineCursor] = useState<Record<string, string>>({});
   const messages = useQuery({ queryKey: ['conversation', id, 'messages', timelineCursor], queryFn: () => getConversationMessages(id, timelineCursor), retry: false, refetchInterval: replyText ? false : 15_000 });
   const currentUser = useQuery({ queryKey: ['auth', 'me'], queryFn: getMe, retry: false, enabled: detail.data?.capabilities.can_reassign === true });
