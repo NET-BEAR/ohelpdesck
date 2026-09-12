@@ -62,7 +62,11 @@ func run(ctx context.Context, worker bool, register WorkerRegistration) error {
 	}
 	log := logging.New(os.Stdout, service, c.Environment)
 	stop := telemetry.Init(service, c.OTLPEndpoint)
+	telemetryStopped := false
 	defer func() {
+		if telemetryStopped {
+			return
+		}
 		shutdown, cancel := context.WithTimeout(context.Background(), c.ShutdownTimeout)
 		defer cancel()
 		if stop(shutdown) != nil {
@@ -76,9 +80,14 @@ func run(ctx context.Context, worker bool, register WorkerRegistration) error {
 		return e
 	}
 	// A handler may be blocked in a database transaction while ignoring its
-	// cancellation context. Pool.Close waits for that checkout, so do not let it
-	// extend the process shutdown past the configured grace period.
-	defer closeWithin(c.ShutdownTimeout, db.Close)
+	// cancellation context. Pool.Close waits for that checkout, so normal
+	// shutdown closes it concurrently with other bounded cleanup operations.
+	databaseClosed := false
+	defer func() {
+		if !databaseClosed {
+			closeWithin(c.ShutdownTimeout, db.Close)
+		}
+	}()
 	cache, e := redis.Open(c.RedisURL)
 	if e != nil {
 		return e
@@ -145,11 +154,31 @@ func run(ctx context.Context, worker bool, register WorkerRegistration) error {
 	}
 	shutdown, end := context.WithTimeout(context.Background(), c.ShutdownTimeout)
 	defer end()
+	databaseDone := make(chan struct{})
+	go func() {
+		db.Close()
+		close(databaseDone)
+	}()
+	telemetryDone := make(chan error, 1)
+	go func() { telemetryDone <- stop(shutdown) }()
 	for _, s := range servers {
 		if err := s.Shutdown(shutdown); err != nil {
 			_ = s.Close()
 			e = fmt.Errorf("HTTP shutdown timed out")
 		}
 	}
+	select {
+	case <-databaseDone:
+	case <-shutdown.Done():
+	}
+	databaseClosed = true
+	select {
+	case telemetryErr := <-telemetryDone:
+		if telemetryErr != nil {
+			log.Error("telemetry shutdown failed")
+		}
+	case <-shutdown.Done():
+	}
+	telemetryStopped = true
 	return e
 }
