@@ -160,6 +160,15 @@ func run(ctx context.Context, worker bool, register WorkerRegistration) error {
 	}
 	shutdown, end := context.WithTimeout(context.Background(), c.ShutdownTimeout)
 	defer end()
+	// Drain HTTP first: active API handlers may still need PostgreSQL, Redis or
+	// telemetry until their request has finished or the original deadline ends.
+	for _, s := range servers {
+		if err := s.Shutdown(shutdown); err != nil {
+			_ = s.Close()
+			e = fmt.Errorf("HTTP shutdown timed out")
+		}
+	}
+	// Dependency cleanup may not extend the original shutdown deadline.
 	databaseDone := make(chan struct{})
 	go func() {
 		db.Close()
@@ -174,12 +183,6 @@ func run(ctx context.Context, worker bool, register WorkerRegistration) error {
 	}()
 	telemetryDone := make(chan error, 1)
 	go func() { telemetryDone <- stop(shutdown) }()
-	for _, s := range servers {
-		if err := s.Shutdown(shutdown); err != nil {
-			_ = s.Close()
-			e = fmt.Errorf("HTTP shutdown timed out")
-		}
-	}
 	select {
 	case <-databaseDone:
 	case <-shutdown.Done():
