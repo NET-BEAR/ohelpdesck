@@ -1,7 +1,7 @@
 import { Component, type FormEvent, type ReactNode, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
-import { getConversation, getConversationMessages, getMe, getReadiness, getWorkspace, login, logout } from './api';
+import { assignConversation, getConversation, getConversationMessages, getMe, getReadiness, getWorkspace, login, logout, queueReply } from './api';
 
 export class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
@@ -68,9 +68,35 @@ function ConversationPage() {
   const { id = '' } = useParams<{ id: string }>();
   const detail = useQuery({ queryKey: ['conversation', id], queryFn: () => getConversation(id), retry: false, refetchInterval: 15_000 });
   const messages = useQuery({ queryKey: ['conversation', id, 'messages'], queryFn: () => getConversationMessages(id), retry: false, refetchInterval: 15_000 });
+  const currentUser = useQuery({ queryKey: ['auth', 'me'], queryFn: getMe, retry: false, enabled: detail.data?.capabilities.can_reassign === true });
+  const [replyText, setReplyText] = useState('');
+  const [replyKey, setReplyKey] = useState<string>();
+  const [actionError, setActionError] = useState<string>();
+  const [pending, setPending] = useState(false);
   if (detail.isPending || messages.isPending) return <p role="status">Загружаем диалог…</p>;
   if (detail.isError || messages.isError) return <p role="alert">Не удалось загрузить диалог.</p>;
-  return <section><p><Link to="/workspace">К обращениям</Link></p><h1>Диалог</h1><pre aria-label="Состояние диалога">{JSON.stringify(detail.data, null, 2)}</pre><h2>Сообщения</h2><pre aria-label="История сообщений">{JSON.stringify(messages.data, null, 2)}</pre></section>;
+  if (!detail.data) return <p role="alert">Не удалось загрузить диалог.</p>;
+  const conversation = detail.data;
+  async function refresh() { await Promise.all([detail.refetch(), messages.refetch()]); }
+  async function submitReply(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const text = replyText.trim();
+    if (!text) return;
+    const key = replyKey ?? crypto.randomUUID();
+    setPending(true); setActionError(undefined);
+    try { await queueReply(id, text, key); setReplyText(''); setReplyKey(undefined); await refresh(); } catch (error) { setReplyKey(key); setActionError(error instanceof Error ? error.message : 'Не удалось сохранить изменения.'); } finally { setPending(false); }
+  }
+  async function changeAssignee(assigneeID: string | null) {
+    setPending(true); setActionError(undefined);
+    try { await assignConversation(id, assigneeID, conversation.version); await refresh(); } catch (error) { setActionError(error instanceof Error ? error.message : 'Не удалось сохранить изменения.'); if (error instanceof Error && error.message === 'Данные диалога устарели.') await refresh(); } finally { setPending(false); }
+  }
+  const canReply = conversation.capabilities.can_reply;
+  const canReassign = conversation.capabilities.can_reassign;
+  return <section><p><Link to="/workspace">К обращениям</Link></p><h1>Диалог</h1>
+    {actionError && <p role="alert">{actionError}</p>}
+    {canReassign && <p><button type="button" disabled={pending || currentUser.isPending || currentUser.isError} onClick={() => void changeAssignee(currentUser.data?.id ?? null)}>Взять на себя</button><button type="button" disabled={pending || conversation.assignee === null} onClick={() => void changeAssignee(null)}>Снять назначение</button></p>}
+    {canReply && <form onSubmit={(event) => void submitReply(event)}><label>Ответ<textarea value={replyText} onChange={(event) => setReplyText(event.target.value)} required maxLength={10_000} /></label><button type="submit" disabled={pending}>{pending ? 'Сохраняем ответ…' : 'Отправить в очередь'}</button></form>}
+    <pre aria-label="Состояние диалога">{JSON.stringify(conversation, null, 2)}</pre><h2>Сообщения</h2><pre aria-label="История сообщений">{JSON.stringify(messages.data, null, 2)}</pre></section>;
 }
 
 export function App() {

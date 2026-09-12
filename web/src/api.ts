@@ -81,6 +81,13 @@ export async function logout(): Promise<void> {
 
 export interface WorkspaceItem { id: string; number: number; channel: { id: string; name: string; type: string; status: string }; contact: { id: string; display_name: string }; assignee: { id: string; name: string } | null; status: string; priority: string; waiting_since: string | null; last_activity_at: string; version: number; }
 export interface WorkspacePage { items: WorkspaceItem[]; next_cursor: string | null; }
+export interface ConversationDetail {
+  id: string;
+  version: number;
+  assignee: { id: string; name: string } | null;
+  capabilities: { can_reply: boolean; can_reassign: boolean };
+}
+export interface OutboundMessage { id: string; conversation_id: string; channel_id: string; status: string; duplicate: boolean; }
 async function workspaceJSON(path: string): Promise<unknown> {
   let response: Response;
   try {
@@ -93,5 +100,26 @@ async function workspaceJSON(path: string): Promise<unknown> {
   return body;
 }
 export async function getWorkspace(): Promise<WorkspacePage> { const body = await workspaceJSON('/api/v1/conversations'); if (typeof body !== 'object' || body === null || !Array.isArray((body as Record<string, unknown>).items)) throw new Error('Некорректный ответ API'); return body as WorkspacePage; }
-export async function getConversation(id: string): Promise<unknown> { return workspaceJSON(`/api/v1/conversations/${encodeURIComponent(id)}`); }
+export async function getConversation(id: string): Promise<ConversationDetail> { return workspaceJSON(`/api/v1/conversations/${encodeURIComponent(id)}`) as Promise<ConversationDetail>; }
 export async function getConversationMessages(id: string): Promise<unknown> { return workspaceJSON(`/api/v1/conversations/${encodeURIComponent(id)}/messages`); }
+
+async function workspaceMutation(path: string, method: 'PATCH' | 'POST', body: unknown, headers: Record<string, string> = {}): Promise<unknown> {
+  if (!csrfToken) throw new Error('Сессия недоступна');
+  let response: Response;
+  try {
+    response = await fetch(path, { method, credentials: 'same-origin', signal: AbortSignal.timeout(5000), headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken, ...headers }, body: JSON.stringify(body) });
+  } catch {
+    throw new Error('Не удалось связаться с API');
+  }
+  const result = await bodyOrError(response);
+  if (response.ok) return result;
+  if (response.status === 401) throw new Error('Сессия недоступна');
+  if (response.status === 409) throw new Error('Данные диалога устарели.');
+  throw new Error('Не удалось сохранить изменения.');
+}
+export async function assignConversation(id: string, assigneeID: string | null, expectedVersion: number): Promise<ConversationDetail> {
+  return workspaceMutation(`/api/v1/conversations/${encodeURIComponent(id)}/assignee`, 'PATCH', { assignee_id: assigneeID, expected_version: expectedVersion }) as Promise<ConversationDetail>;
+}
+export async function queueReply(id: string, text: string, idempotencyKey: string): Promise<OutboundMessage> {
+  return workspaceMutation(`/api/v1/conversations/${encodeURIComponent(id)}/messages`, 'POST', { text }, { 'Idempotency-Key': idempotencyKey }) as Promise<OutboundMessage>;
+}

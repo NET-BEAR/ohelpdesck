@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getConversation, getConversationMessages, getMe, getReadiness, getWorkspace, login, logout } from './api';
+import { assignConversation, getConversation, getConversationMessages, getMe, getReadiness, getWorkspace, login, logout, queueReply } from './api';
 
 afterEach(() => vi.unstubAllGlobals());
 describe('readiness client', () => {
@@ -99,5 +99,23 @@ describe('operator workspace client', () => {
     await expect(getWorkspace()).rejects.toThrow('Не удалось связаться с API');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ next_cursor: null }))));
     await expect(getWorkspace()).rejects.toThrow('Некорректный ответ API');
+  });
+  it('queues a reply with in-memory CSRF and an idempotency key', async () => {
+    const csrf = 'x'.repeat(43);
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ csrf_token: csrf })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'message-1', status: 'queued' }), { status: 201 }));
+    vi.stubGlobal('fetch', fetcher);
+    await login('agent', 'correct horse battery staple');
+    await expect(queueReply('conversation/1', 'Готовим ответ', 'request-key')).resolves.toMatchObject({ id: 'message-1' });
+    expect(fetcher).toHaveBeenNthCalledWith(2, '/api/v1/conversations/conversation%2F1/messages', expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ 'X-CSRF-Token': csrf, 'Idempotency-Key': 'request-key' }) }));
+  });
+  it('maps assignment conflict to a safe refreshable error', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ csrf_token: 'y'.repeat(43) })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'version_conflict' } }), { status: 409 }));
+    vi.stubGlobal('fetch', fetcher);
+    await login('agent', 'correct horse battery staple');
+    await expect(assignConversation('conversation-1', null, 3)).rejects.toThrow('Данные диалога устарели.');
   });
 });

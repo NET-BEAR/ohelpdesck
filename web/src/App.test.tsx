@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -69,7 +69,7 @@ it('retries a failed operator workspace request explicitly', async () => {
   expect(request).toHaveBeenCalledTimes(2);
 });
 it('renders the selected conversation and its message timeline', async () => {
-  const detail = { id: 'conversation-1', number: 42, status: 'open' };
+  const detail = { id: 'conversation-1', version: 1, assignee: null, capabilities: { can_reply: false, can_reassign: false } };
   const history = { items: [{ id: 'message-1', body: 'Здравствуйте' }], next_cursor: null };
   vi.spyOn(api, 'getConversation').mockResolvedValue(detail);
   vi.spyOn(api, 'getConversationMessages').mockResolvedValue(history);
@@ -82,11 +82,50 @@ it('renders the selected conversation and its message timeline', async () => {
   expect(api.getConversationMessages).toHaveBeenCalledWith('conversation-1');
 });
 it('uses a safe conversation error when either workspace query fails', async () => {
-  vi.spyOn(api, 'getConversation').mockResolvedValue({ id: 'conversation-1' });
+  vi.spyOn(api, 'getConversation').mockResolvedValue({ id: 'conversation-1', version: 1, assignee: null, capabilities: { can_reply: false, can_reassign: false } });
   vi.spyOn(api, 'getConversationMessages').mockRejectedValue(new Error('upstream detail'));
   mount('/workspace/conversation-1');
   expect((await screen.findByRole('alert')).textContent).toContain('Не удалось загрузить диалог.');
   expect(screen.queryByText('upstream detail')).toBeNull();
+});
+it('queues a reply with an idempotency key and refreshes the conversation', async () => {
+  const detail = { id: 'conversation-1', version: 3, assignee: null, capabilities: { can_reply: true, can_reassign: false } };
+  const read = vi.spyOn(api, 'getConversation').mockResolvedValue(detail);
+  vi.spyOn(api, 'getConversationMessages').mockResolvedValue({ items: [] });
+  const queue = vi.spyOn(api, 'queueReply').mockResolvedValue({ id: 'message-1', conversation_id: detail.id, channel_id: 'channel-1', status: 'queued', duplicate: false });
+  mount('/workspace/conversation-1');
+  await screen.findByRole('textbox', { name: 'Ответ' });
+  fireEvent.change(screen.getByRole('textbox', { name: 'Ответ' }), { target: { value: 'Проверяем обращение' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Отправить в очередь' }));
+  await screen.findByRole('button', { name: 'Отправить в очередь' });
+  expect(queue).toHaveBeenCalledWith('conversation-1', 'Проверяем обращение', expect.any(String));
+  expect(read).toHaveBeenCalledTimes(2);
+});
+it('re-reads the conversation after an assignment version conflict', async () => {
+  const detail = { id: 'conversation-1', version: 3, assignee: { id: 'agent-2', name: 'Коллега' }, capabilities: { can_reply: false, can_reassign: true } };
+  const read = vi.spyOn(api, 'getConversation').mockResolvedValue(detail);
+  vi.spyOn(api, 'getConversationMessages').mockResolvedValue({ items: [] });
+  vi.spyOn(api, 'getMe').mockResolvedValue({ id: 'agent-1', login: 'agent', email: 'agent@example.test', name: 'Оператор', role: 'agent', status: 'active', permissions: [] });
+  const assign = vi.spyOn(api, 'assignConversation').mockRejectedValue(new Error('Данные диалога устарели.'));
+  mount('/workspace/conversation-1');
+  const take = await screen.findByRole('button', { name: 'Взять на себя' });
+  await waitFor(() => expect((take as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(take);
+  expect((await screen.findByRole('alert')).textContent).toContain('Данные диалога устарели.');
+  expect(assign).toHaveBeenCalledWith('conversation-1', 'agent-1', 3);
+  expect(read).toHaveBeenCalledTimes(2);
+});
+it('assigns the conversation to the current operator with its version', async () => {
+  const detail = { id: 'conversation-1', version: 4, assignee: null, capabilities: { can_reply: false, can_reassign: true } };
+  vi.spyOn(api, 'getConversation').mockResolvedValue(detail);
+  vi.spyOn(api, 'getConversationMessages').mockResolvedValue({ items: [] });
+  vi.spyOn(api, 'getMe').mockResolvedValue({ id: 'agent-1', login: 'agent', email: 'agent@example.test', name: 'Оператор', role: 'agent', status: 'active', permissions: [] });
+  const assign = vi.spyOn(api, 'assignConversation').mockResolvedValue(detail);
+  mount('/workspace/conversation-1');
+  const take = await screen.findByRole('button', { name: 'Взять на себя' });
+  await waitFor(() => expect((take as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(take);
+  await waitFor(() => expect(assign).toHaveBeenCalledWith('conversation-1', 'agent-1', 4));
 });
 it('contains rendering errors without exposing their details', () => {
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
