@@ -1,5 +1,5 @@
 import { Component, type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Link, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { assignConversation, getConversation, getConversationMessages, getMe, getReadiness, getWorkspace, login, logout, queueReply, WorkspaceActionError } from './api';
 
@@ -90,9 +90,9 @@ function ConversationPage() {
   const detail = useQuery({ queryKey: ['conversation', id], queryFn: () => getConversation(id), retry: false, refetchInterval: 15_000 });
   useEffect(() => { if (detail.data && focusedID.current !== id) { heading.current?.focus(); focusedID.current = id; } }, [id, detail.data]);
   const [timelineCursor, setTimelineCursor] = useState<Record<string, string>>({});
-  const messages = useQuery({ queryKey: ['conversation', id, 'messages', timelineCursor], queryFn: () => getConversationMessages(id, timelineCursor), retry: false, refetchInterval: replyText ? false : 15_000 });
+  const messages = useQuery({ queryKey: ['conversation', id, 'messages', timelineCursor], queryFn: () => getConversationMessages(id, timelineCursor), placeholderData: keepPreviousData, retry: false, refetchInterval: replyText ? false : 15_000 });
   const currentUser = useQuery({ queryKey: ['auth', 'me'], queryFn: getMe, retry: false, enabled: detail.data?.capabilities.can_reassign === true });
-  if (detail.isPending || messages.isPending) return <main aria-busy="true"><p role="status">Загружаем диалог…</p></main>;
+  if (detail.isPending || (messages.isPending && !messages.data)) return <main aria-busy="true"><p role="status">Загружаем диалог…</p></main>;
   if (detail.isError || messages.isError) return <p role="alert">Не удалось загрузить диалог.</p>;
   if (!detail.data) return <p role="alert">Не удалось загрузить диалог.</p>;
   const conversation = detail.data;

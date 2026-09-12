@@ -102,6 +102,21 @@ it('renders the selected conversation and its message timeline', async () => {
   expect(await screen.findByRole('button', { name: 'Позже' })).toBeDefined();
   fireEvent.click(screen.getByRole('button', { name: 'Позже' }));
 });
+it('retains focus on the pagination control through an async timeline page load', async () => {
+  const detail = { id: 'conversation-1', version: 1, assignee: null, capabilities: { can_reply: false, can_reassign: false } };
+  let resolvePage: ((value: unknown) => void) | undefined;
+  vi.spyOn(api, 'getConversation').mockResolvedValue(detail);
+  vi.spyOn(api, 'getConversationMessages').mockImplementation((_id, query) => {
+    if (!query?.after) return Promise.resolve({ items: [{ id: 'one', direction: 'incoming', status: 'received' }], next_cursor: 'later' });
+    return new Promise(resolve => { resolvePage = resolve; });
+  });
+  mount('/workspace/conversation-1');
+  const later = await screen.findByRole('button', { name: 'Позже' });
+  later.focus(); fireEvent.click(later);
+  expect(later).toBe(document.activeElement);
+  resolvePage?.({ items: [{ id: 'two', direction: 'incoming', status: 'received' }] });
+  await waitFor(() => expect(document.activeElement).toBe(later));
+});
 it('uses a safe conversation error when either workspace query fails', async () => {
   vi.spyOn(api, 'getConversation').mockResolvedValue({ id: 'conversation-1', version: 1, assignee: null, capabilities: { can_reply: false, can_reassign: false } });
   vi.spyOn(api, 'getConversationMessages').mockRejectedValue(new Error('upstream detail'));
